@@ -1,0 +1,517 @@
+import { useState, useEffect, useCallback } from 'react'
+import { stockOpnamesAPI } from '../api'
+import SearchableSelect from '../components/SearchableSelect'
+import Modal from '../components/Modal'
+import ConfirmDialog from '../components/ConfirmDialog'
+import Pagination from '../components/Pagination'
+import { formatDate, formatNumber } from '../utils/format'
+
+const STATUSES = ['Draft', 'Approved', 'Rejected']
+const DIFF_REASONS = ['Damaged', 'Broken', 'Lost', 'Expired', 'Miscount', 'Theft', 'Other']
+
+function StatusBadge({ status }) {
+  const map = {
+    Draft:    ['#eff6ff', '#2563eb'],
+    Approved: ['#dcfce7', '#16a34a'],
+    Rejected: ['#fee2e2', '#dc2626'],
+  }
+  const [bg, color] = map[status] || ['#f1f5f9', '#64748b']
+  return (
+    <span style={{ padding: '0.2rem 0.6rem', borderRadius: '999px', fontSize: '0.72rem', fontWeight: 600, background: bg, color }}>
+      {status}
+    </span>
+  )
+}
+
+function DiffBadge({ diff }) {
+  if (Math.abs(diff) < 0.001) return <span style={{ color: '#94a3b8' }}>—</span>
+  const color = diff > 0 ? '#16a34a' : '#dc2626'
+  return <span style={{ fontWeight: 700, color }}>{diff > 0 ? '+' : ''}{formatNumber(diff)}</span>
+}
+
+export default function StockOpname() {
+  const [items,       setItems]       = useState([])
+  const [total,       setTotal]       = useState(0)
+  const [page,        setPage]        = useState(1)
+  const [createModal, setCreateModal] = useState(false)
+  const [detailModal, setDetailModal] = useState(false)
+  const [selected,    setSelected]    = useState(null)   // opname being viewed/edited
+  const [deleteId,    setDeleteId]    = useState(null)
+  const [loading,     setLoading]     = useState(false)
+  const [error,       setError]       = useState('')
+
+  // Create form
+  const [newForm, setNewForm] = useState({
+    opname_date:  new Date().toISOString().slice(0, 10),
+    warehouse_id: '',
+    store_id:     '',
+    remarks:      '',
+  })
+
+  // Detail add form
+  const [addProduct, setAddProduct]   = useState({ product_id: '', physical_qty: '', reason: '', remarks: '' })
+  const [addError,   setAddError]     = useState('')
+  const [addLoading, setAddLoading]   = useState(false)
+  const [populating, setPopulating]   = useState(false)
+  const [approving,  setApproving]    = useState(false)
+  const limit = 15
+
+  const load = useCallback(async () => {
+    const res = await stockOpnamesAPI.list({ page, limit })
+    setItems(res.data.items || [])
+    setTotal(res.data.total || 0)
+  }, [page])
+
+  useEffect(() => { load() }, [load])
+
+  const openDetail = async (item) => {
+    const res = await stockOpnamesAPI.get(item.opname_id)
+    setSelected(res.data)
+    setAddProduct({ product_id: '', physical_qty: '', reason: '', remarks: '' })
+    setAddError('')
+    setDetailModal(true)
+  }
+
+  const refreshSelected = async () => {
+    if (!selected) return
+    const res = await stockOpnamesAPI.get(selected.opname_id)
+    setSelected(res.data)
+  }
+
+  const handleCreate = async (e) => {
+    e.preventDefault()
+    setError('')
+    if (!newForm.warehouse_id) { setError('Please select a warehouse'); return }
+    setLoading(true)
+    try {
+      const data = {
+        opname_date:  newForm.opname_date,
+        warehouse_id: parseInt(newForm.warehouse_id),
+        store_id:     newForm.store_id ? parseInt(newForm.store_id) : null,
+        remarks:      newForm.remarks || null,
+      }
+      await stockOpnamesAPI.create(data)
+      setCreateModal(false)
+      load()
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to create.')
+    } finally { setLoading(false) }
+  }
+
+  const handlePopulate = async () => {
+    if (!selected) return
+    setPopulating(true)
+    try {
+      await stockOpnamesAPI.populateFromInventory(selected.opname_id)
+      await refreshSelected()
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to populate.')
+    } finally { setPopulating(false) }
+  }
+
+  const handleAddDetail = async (e) => {
+    e.preventDefault()
+    setAddError('')
+    if (!addProduct.product_id) { setAddError('Select a product'); return }
+    const pqty = parseFloat(addProduct.physical_qty)
+    if (isNaN(pqty) || pqty < 0) { setAddError('Enter a valid physical quantity (≥ 0)'); return }
+    setAddLoading(true)
+    try {
+      await stockOpnamesAPI.addDetail(selected.opname_id, {
+        product_id:   parseInt(addProduct.product_id),
+        physical_qty: pqty,
+        reason:       addProduct.reason || null,
+        remarks:      addProduct.remarks || null,
+      })
+      setAddProduct({ product_id: '', physical_qty: '', reason: '', remarks: '' })
+      await refreshSelected()
+    } catch (err) {
+      setAddError(err.response?.data?.detail || 'Failed to add product.')
+    } finally { setAddLoading(false) }
+  }
+
+  const handleUpdateDetail = async (detailId, physical_qty, reason) => {
+    try {
+      await stockOpnamesAPI.updateDetail(selected.opname_id, detailId, { physical_qty, reason })
+      await refreshSelected()
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to update.')
+    }
+  }
+
+  const handleDeleteDetail = async (detailId) => {
+    if (!window.confirm('Remove this product from the opname?')) return
+    try {
+      await stockOpnamesAPI.deleteDetail(selected.opname_id, detailId)
+      await refreshSelected()
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to remove.')
+    }
+  }
+
+  const handleApprove = async () => {
+    if (!window.confirm('Approve this Stock Opname? Inventory will be adjusted to match physical counts.')) return
+    setApproving(true)
+    try {
+      await stockOpnamesAPI.approve(selected.opname_id)
+      await refreshSelected()
+      load()
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to approve.')
+    } finally { setApproving(false) }
+  }
+
+  const handleReject = async () => {
+    if (!window.confirm('Reject this Stock Opname?')) return
+    try {
+      await stockOpnamesAPI.reject(selected.opname_id)
+      await refreshSelected()
+      load()
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Failed to reject.')
+    }
+  }
+
+  const handleDelete = async (id) => {
+    await stockOpnamesAPI.delete(id)
+    load()
+  }
+
+  const isEditable = selected && selected.status === 'Draft'
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+        <div>
+          <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1e293b' }}>Stock Opname</h1>
+          <p style={{ color: '#64748b', fontSize: '0.875rem' }}>
+            Compare physical stock to system stock — approve to adjust inventory
+          </p>
+        </div>
+        <button className="btn btn-primary" onClick={() => { setNewForm({ opname_date: new Date().toISOString().slice(0, 10), warehouse_id: '', store_id: '', remarks: '' }); setError(''); setCreateModal(true) }}>
+          + New Opname
+        </button>
+      </div>
+
+      {/* ── List ── */}
+      <div className="card">
+        <div className="table-container">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>#</th><th>Date</th><th>Warehouse</th><th>Store</th>
+                <th>Products</th><th>Status</th><th>Created By</th><th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.length === 0 ? (
+                <tr><td colSpan={8} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>No opname sessions found. Create the first one.</td></tr>
+              ) : items.map((item, i) => (
+                <tr key={item.opname_id}>
+                  <td style={{ color: '#94a3b8' }}>{(page - 1) * limit + i + 1}</td>
+                  <td>{formatDate(item.opname_date)}</td>
+                  <td style={{ fontWeight: 500 }}>{item.warehouse?.warehouse_name || '—'}</td>
+                  <td>{item.store?.store_name || '—'}</td>
+                  <td>
+                    <span style={{ background: '#f1f5f9', padding: '2px 8px', borderRadius: 4, fontSize: '0.75rem', fontWeight: 600 }}>
+                      {item.detail_count || 0}
+                    </span>
+                  </td>
+                  <td><StatusBadge status={item.status} /></td>
+                  <td style={{ fontSize: '0.8rem', color: '#475569' }}>{item.created_by || '—'}</td>
+                  <td>
+                    <div style={{ display: 'flex', gap: '0.375rem' }}>
+                      <button
+                        className="btn btn-sm"
+                        style={{ background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe', fontWeight: 600, fontSize: '0.72rem', padding: '0.2rem 0.6rem', borderRadius: '0.375rem', cursor: 'pointer' }}
+                        onClick={() => openDetail(item)}
+                      >
+                        {item.status === 'Draft' ? 'Edit / Count' : 'View'}
+                      </button>
+                      {item.status === 'Draft' && (
+                        <button className="btn btn-danger btn-sm" onClick={() => setDeleteId(item.opname_id)}>Del</button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+      </div>
+
+      {/* ── Create Modal ── */}
+      <Modal open={createModal} onClose={() => setCreateModal(false)} title="New Stock Opname">
+        <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {error && (
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '0.5rem', padding: '0.75rem', color: '#dc2626', fontSize: '0.875rem' }}>{error}</div>
+          )}
+          <div>
+            <label className="label">Opname Date *</label>
+            <input className="input" type="date" required value={newForm.opname_date} onChange={e => setNewForm(f => ({ ...f, opname_date: e.target.value }))} />
+          </div>
+          <div>
+            <label className="label">Warehouse *</label>
+            <SearchableSelect
+              endpoint="/warehouses"
+              labelField="warehouse_name"
+              valueField="warehouse_id"
+              value={newForm.warehouse_id}
+              onChange={v => setNewForm(f => ({ ...f, warehouse_id: v }))}
+              placeholder="Select warehouse..."
+              required
+            />
+            <p style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.25rem' }}>
+              System quantities will be fetched from this warehouse's current inventory
+            </p>
+          </div>
+          <div>
+            <label className="label">Store (optional)</label>
+            <SearchableSelect
+              endpoint="/stores"
+              labelField="store_name"
+              valueField="store_id"
+              value={newForm.store_id}
+              onChange={v => setNewForm(f => ({ ...f, store_id: v }))}
+              placeholder="Select store (optional)..."
+            />
+          </div>
+          <div>
+            <label className="label">Remarks</label>
+            <textarea className="input" rows={2} value={newForm.remarks} onChange={e => setNewForm(f => ({ ...f, remarks: e.target.value }))} />
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+            <button type="button" className="btn btn-secondary" onClick={() => setCreateModal(false)}>Cancel</button>
+            <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Creating...' : 'Create Opname'}</button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* ── Detail / Count Modal ── */}
+      <Modal open={detailModal} onClose={() => setDetailModal(false)} title={`Stock Opname — ${selected ? formatDate(selected.opname_date) : ''}`} size="xl">
+        {selected && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            {/* Header info */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem' }}>
+              {[
+                ['Warehouse', selected.warehouse?.warehouse_name || '—'],
+                ['Date', formatDate(selected.opname_date)],
+                ['Status', null],
+              ].map(([lbl, val]) => (
+                <div key={lbl} style={{ background: '#f8fafc', padding: '0.625rem 0.875rem', borderRadius: '0.5rem', border: '1px solid #e2e8f0' }}>
+                  <div style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.25rem' }}>{lbl}</div>
+                  {val !== null
+                    ? <div style={{ fontWeight: 600, fontSize: '0.875rem', color: '#1e293b' }}>{val}</div>
+                    : <StatusBadge status={selected.status} />
+                  }
+                </div>
+              ))}
+            </div>
+
+            {/* Approve / Reject buttons */}
+            {selected.status === 'Draft' && (
+              <div style={{ display: 'flex', gap: '0.75rem', padding: '0.875rem', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '0.5rem' }}>
+                <div style={{ flex: 1, fontSize: '0.8125rem', color: '#78350f' }}>
+                  <strong>Ready to approve?</strong> Approving will adjust inventory to match physical counts for all items with a difference.
+                </div>
+                <button
+                  className="btn"
+                  style={{ background: '#dc2626', color: 'white', border: 'none', cursor: 'pointer', padding: '0.375rem 0.875rem', borderRadius: '0.375rem', fontSize: '0.8125rem', fontWeight: 600 }}
+                  onClick={handleReject}
+                >
+                  Reject
+                </button>
+                <button
+                  className="btn"
+                  style={{ background: '#16a34a', color: 'white', border: 'none', cursor: 'pointer', padding: '0.375rem 0.875rem', borderRadius: '0.375rem', fontSize: '0.8125rem', fontWeight: 600 }}
+                  onClick={handleApprove}
+                  disabled={approving}
+                >
+                  {approving ? 'Approving...' : 'Approve & Adjust Inventory'}
+                </button>
+              </div>
+            )}
+
+            {selected.status === 'Approved' && (
+              <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '0.5rem', padding: '0.75rem 1rem', fontSize: '0.8125rem', color: '#166534', fontWeight: 500 }}>
+                This opname is approved. Inventory has been adjusted accordingly.
+              </div>
+            )}
+
+            {/* Add product form (Draft only) */}
+            {isEditable && (
+              <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '0.5rem', padding: '1rem' }}>
+                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', marginBottom: '0.5rem' }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+                    onClick={handlePopulate}
+                    disabled={populating}
+                  >
+                    {populating ? 'Loading...' : '+ Auto-fill from Inventory'}
+                  </button>
+                  <span style={{ fontSize: '0.75rem', color: '#64748b', lineHeight: 1.4 }}>
+                    Adds all products currently in this warehouse with system qty pre-filled
+                  </span>
+                </div>
+
+                <form onSubmit={handleAddDetail} style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+                  {addError && (
+                    <div style={{ width: '100%', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '0.375rem', padding: '0.5rem 0.75rem', color: '#dc2626', fontSize: '0.8rem' }}>{addError}</div>
+                  )}
+                  <div style={{ flex: '0 0 260px' }}>
+                    <label className="label" style={{ fontSize: '0.72rem' }}>Product</label>
+                    <SearchableSelect
+                      endpoint="/products"
+                      labelField="product_name"
+                      valueField="product_id"
+                      params={{ status: 'Active' }}
+                      value={addProduct.product_id}
+                      onChange={v => setAddProduct(p => ({ ...p, product_id: v }))}
+                      placeholder="Select product..."
+                    />
+                  </div>
+                  <div style={{ flex: '0 0 120px' }}>
+                    <label className="label" style={{ fontSize: '0.72rem' }}>Physical Qty</label>
+                    <input
+                      className="input" type="number" min="0" step="0.01"
+                      value={addProduct.physical_qty}
+                      onChange={e => setAddProduct(p => ({ ...p, physical_qty: e.target.value }))}
+                      placeholder="e.g. 95"
+                    />
+                  </div>
+                  <div style={{ flex: '0 0 160px' }}>
+                    <label className="label" style={{ fontSize: '0.72rem' }}>Reason (if diff)</label>
+                    <select className="input" value={addProduct.reason} onChange={e => setAddProduct(p => ({ ...p, reason: e.target.value }))}>
+                      <option value="">No reason</option>
+                      {DIFF_REASONS.map(r => <option key={r}>{r}</option>)}
+                    </select>
+                  </div>
+                  <button type="submit" className="btn btn-primary" disabled={addLoading} style={{ flexShrink: 0 }}>
+                    {addLoading ? 'Adding...' : '+ Add'}
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {/* Products table */}
+            <div>
+              <div style={{ fontWeight: 600, fontSize: '0.8125rem', color: '#1e293b', marginBottom: '0.5rem' }}>
+                Products ({selected.details?.length || 0})
+              </div>
+              {(!selected.details || selected.details.length === 0) ? (
+                <div style={{ textAlign: 'center', padding: '1.5rem', color: '#94a3b8', background: '#f8fafc', borderRadius: '0.5rem', border: '1px dashed #d1d5db' }}>
+                  No products added yet. Use "Auto-fill from Inventory" or add manually above.
+                </div>
+              ) : (
+                <div className="table-container" style={{ maxHeight: '320px', overflowY: 'auto' }}>
+                  <table className="table" style={{ fontSize: '0.8125rem' }}>
+                    <thead>
+                      <tr>
+                        <th>Product</th>
+                        <th style={{ textAlign: 'right' }}>System Qty</th>
+                        <th style={{ textAlign: 'right' }}>Physical Qty</th>
+                        <th style={{ textAlign: 'right' }}>Difference</th>
+                        <th>Reason</th>
+                        {isEditable && <th></th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selected.details.map(d => (
+                        <DetailRow
+                          key={d.id}
+                          detail={d}
+                          editable={isEditable}
+                          reasons={DIFF_REASONS}
+                          onUpdate={handleUpdateDetail}
+                          onDelete={handleDeleteDetail}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <button className="btn btn-secondary" onClick={() => setDetailModal(false)}>Close</button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <ConfirmDialog
+        open={!!deleteId}
+        onClose={() => setDeleteId(null)}
+        onConfirm={() => handleDelete(deleteId)}
+      />
+    </div>
+  )
+}
+
+// ── Editable detail row ────────────────────────────────────────────────────────
+// ── Diff badge used in DetailRow ─────────────────────────────────────────────
+function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
+  const [editing, setEditing] = useState(false)
+  const [pqty,    setPqty]    = useState(String(detail.physical_qty))
+  const [reason,  setReason]  = useState(detail.reason || '')
+
+  const save = async () => {
+    const qty = parseFloat(pqty)
+    if (isNaN(qty) || qty < 0) return
+    await onUpdate(detail.id, qty, reason || null)
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <tr>
+        <td style={{ fontWeight: 500 }}>{detail.product?.product_name || `#${detail.product_id}`}</td>
+        <td style={{ textAlign: 'right' }}>{formatNumber(detail.system_qty)}</td>
+        <td>
+          <input
+            type="number" min="0" step="0.01"
+            value={pqty}
+            onChange={e => setPqty(e.target.value)}
+            style={{ width: '90px', padding: '0.25rem 0.5rem', border: '1px solid #d1d5db', borderRadius: '0.375rem', fontSize: '0.8rem', textAlign: 'right' }}
+          />
+        </td>
+        <td style={{ textAlign: 'right' }}>
+          <DiffBadge diff={parseFloat(pqty || 0) - detail.system_qty} />
+        </td>
+        <td>
+          <select value={reason} onChange={e => setReason(e.target.value)} style={{ fontSize: '0.75rem', padding: '0.2rem 0.375rem', border: '1px solid #d1d5db', borderRadius: '0.375rem' }}>
+            <option value="">No reason</option>
+            {reasons.map(r => <option key={r}>{r}</option>)}
+          </select>
+        </td>
+        <td>
+          <div style={{ display: 'flex', gap: '0.25rem' }}>
+            <button onClick={save} style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: '#dcfce7', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: '0.25rem', cursor: 'pointer', fontWeight: 600 }}>Save</button>
+            <button onClick={() => { setPqty(String(detail.physical_qty)); setReason(detail.reason || ''); setEditing(false) }} style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: '#f1f5f9', color: '#64748b', border: '1px solid #d1d5db', borderRadius: '0.25rem', cursor: 'pointer' }}>Cancel</button>
+          </div>
+        </td>
+      </tr>
+    )
+  }
+
+  return (
+    <tr>
+      <td style={{ fontWeight: 500 }}>{detail.product?.product_name || `#${detail.product_id}`}</td>
+      <td style={{ textAlign: 'right' }}>{formatNumber(detail.system_qty)}</td>
+      <td style={{ textAlign: 'right', fontWeight: 600 }}>{formatNumber(detail.physical_qty)}</td>
+      <td style={{ textAlign: 'right' }}><DiffBadge diff={detail.difference_qty} /></td>
+      <td style={{ fontSize: '0.75rem', color: '#64748b' }}>{detail.reason || '—'}</td>
+      {editable && (
+        <td>
+          <div style={{ display: 'flex', gap: '0.25rem' }}>
+            <button onClick={() => setEditing(true)} style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '0.25rem', cursor: 'pointer', fontWeight: 600 }}>Edit</button>
+            <button onClick={() => onDelete(detail.id)} style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: '#fee2e2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: '0.25rem', cursor: 'pointer', fontWeight: 600 }}>✕</button>
+          </div>
+        </td>
+      )}
+    </tr>
+  )
+}

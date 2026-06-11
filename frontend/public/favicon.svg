@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <circle cx="16" cy="16" r="16" fill="#2D1B09"/>
+  <!-- First chevron -->
+  <polygon points="2.6,5.3 8,12.6 2.6,20 4.6,20 6.7,12.6 4.6,5.3" fill="#F5A623"/>
+  <!-- Second chevron -->
+  <polygon points="8.3,5.3 13.8,12.6 8.3,20 10.4,20 12.5,12.6 10.4,5.3" fill="#F5A623"/>
+  <!-- K -->
+  <text x="13.9" y="19.5"
+    font-family="'Arial Black', Impact, sans-serif"
+    font-size="14.7" font-weight="900" fill="white">K</text>
+</svg>

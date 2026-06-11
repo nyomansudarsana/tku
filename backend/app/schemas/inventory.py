@@ -1,0 +1,51 @@
+from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
+
+
+class InventoryBase(BaseModel):
+    product_id: int
+    warehouse_id: int
+    inventory_type: str = "TKU Product"
+    quantity: float = 0
+    unit: str = "PCS"
+    remark: Optional[str] = None
+
+
+class InventoryCreate(InventoryBase):
+    pass
+
+
+class InventoryUpdate(BaseModel):
+    product_id: Optional[int] = None
+    warehouse_id: Optional[int] = None
+    inventory_type: Optional[str] = None
+    quantity: Optional[float] = None
+    unit: Optional[str] = None
+    remark: Optional[str] = None
+
+
+class ProductInfo(BaseModel):
+    product_id: int
+    product_name: str
+
+    class Config:
+        from_attributes = True
+
+
+class WarehouseInfo(BaseModel):
+    warehouse_id: int
+    warehouse_name: str
+
+    class Config:
+        from_attributes = True
+
+
+class InventoryResponse(InventoryBase):
+    inventory_id: int
+    product: Optional[ProductInfo] = None
+    warehouse: Optional[WarehouseInfo] = None
+    created_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True

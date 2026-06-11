@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 787 89" overflow="visible" role="img" aria-label="PT Kopernik">
+  <title>PT Kopernik</title>
+
+  <!-- "PT" in golden yellow -->
+  <text x="2" y="77"
+    font-family="'Arial Black','Impact','Franklin Gothic Heavy',Arial,sans-serif"
+    font-size="80" font-weight="900" fill="#F5B800" letter-spacing="-1"
+    text-rendering="geometricPrecision" shape-rendering="geometricPrecision">PT</text>
+
+  <!--
+    ">>" — two filled-polygon chevrons matching the official logo.
+    Each chevron: outer-top, tip, outer-bottom, inner-bottom, inner-tip, inner-top.
+  -->
+  <polygon fill="#E07020"
+    points="118,5 161,44.5 118,84  118,62 143,44.5 118,27"/>
+  <polygon fill="#E07020"
+    points="166,5 209,44.5 166,84  166,62 191,44.5 166,27"/>
+
+  <!-- "KOPERNIK" in dark brown -->
+  <text x="218" y="77"
+    font-family="'Arial Black','Impact','Franklin Gothic Heavy',Arial,sans-serif"
+    font-size="80" font-weight="900" fill="#2D1B09" letter-spacing="-2"
+    text-rendering="geometricPrecision" shape-rendering="geometricPrecision">KOPERNIK</text>
+</svg>

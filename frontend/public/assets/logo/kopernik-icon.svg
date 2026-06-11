@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Kopernik">
+  <title>Kopernik</title>
+  <!-- Dark brown circle background -->
+  <circle cx="100" cy="100" r="100" fill="#2D1B09"/>
+
+  <!-- First chevron (left) -->
+  <polygon points="16,33 50,79 16,125 29,125 42,79 29,33" fill="#F5A623"/>
+
+  <!-- Second chevron -->
+  <polygon points="52,33 86,79 52,125 65,125 78,79 65,33" fill="#F5A623"/>
+
+  <!-- Large K (white) -->
+  <text x="87" y="122"
+    font-family="'Arial Black', Impact, 'Franklin Gothic Heavy', sans-serif"
+    font-size="92" font-weight="900" fill="white">K</text>
+
+  <!-- KOPERNIK.INFO -->
+  <text x="100" y="161"
+    font-family="'Arial Black', Impact, 'Franklin Gothic Heavy', sans-serif"
+    font-size="14.5" font-weight="900" fill="#F5A623"
+    text-anchor="middle" letter-spacing="0.8">KOPERNIK.INFO</text>
+</svg>

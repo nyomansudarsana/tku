@@ -1,0 +1,13 @@
+@echo off
+cd /d "%~dp0backend"
+if not exist venv (
+    echo Creating virtual environment...
+    python -m venv venv
+)
+call venv\Scripts\activate
+echo Installing dependencies...
+pip install -r requirements.txt -q
+echo Running seed...
+python seed.py
+echo Starting backend server...
+uvicorn app.main:app --reload --port 8000

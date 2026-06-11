@@ -1,0 +1,415 @@
+"""
+Bulk Upload router — supports CSV and XLSX imports for master data and transactions.
+"""
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from sqlalchemy.orm import Session
+from typing import Optional
+import csv
+import io
+import json
+import logging
+from datetime import datetime, date
+
+from ..database import get_db
+from ..models.user import User
+from ..models.supplier import Supplier
+from ..models.category import Category
+from ..models.product import Product
+from ..models.warehouse import Warehouse
+from ..models.store import Store
+from ..models.bank_account import BankAccount
+from ..models.bulk_import import BulkImportHistory, BulkImportError
+from ..schemas.bulk_import import BulkValidateResponse, BulkImportResponse, BulkImportErrorSchema
+from ..services.auth import get_current_user
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/bulk-upload", tags=["Bulk Upload"])
+
+# ── Template definitions ────────────────────────────────────────────────────
+TEMPLATES = {
+    "suppliers": {
+        "columns": ["supplier_name", "supplier_contact", "supplier_email", "supplier_address"],
+        "required": ["supplier_name"],
+        "example": [{"supplier_name": "PT Example Supplier", "supplier_contact": "08123456789", "supplier_email": "supplier@example.com", "supplier_address": "Jl. Example No.1, Bali"}],
+    },
+    "categories": {
+        "columns": ["category_name", "description"],
+        "required": ["category_name"],
+        "example": [{"category_name": "Water Filter", "description": "Water purification products"}],
+    },
+    "products": {
+        "columns": ["product_name", "category_name", "sale_price", "sku", "barcode", "unit", "status", "minimum_stock_level", "product_description"],
+        "required": ["product_name", "sale_price"],
+        "example": [{"product_name": "Nazava Filter S", "category_name": "Water Filter", "sale_price": "500000", "sku": "NF-S001", "barcode": "", "unit": "PCS", "status": "Active", "minimum_stock_level": "10", "product_description": "Portable water filter"}],
+    },
+    "bank_accounts": {
+        "columns": ["bank_name", "account_number", "beneficiary_name", "is_active"],
+        "required": ["bank_name", "account_number", "beneficiary_name"],
+        "example": [{"bank_name": "BCA", "account_number": "1234567890", "beneficiary_name": "PT Kopernik", "is_active": "true"}],
+    },
+}
+
+SUPPORTED_TYPES = list(TEMPLATES.keys())
+
+
+def _parse_csv(content: bytes) -> list[dict]:
+    text = content.decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(text))
+    return [dict(row) for row in reader]
+
+
+def _parse_xlsx(content: bytes) -> list[dict]:
+    try:
+        import openpyxl
+    except ImportError:
+        raise HTTPException(status_code=422, detail="XLSX support requires openpyxl. Upload a CSV file instead.")
+    wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+    headers = [str(h).strip() if h is not None else "" for h in rows[0]]
+    result = []
+    for row in rows[1:]:
+        if all(v is None for v in row):
+            continue
+        result.append({headers[i]: (str(row[i]).strip() if row[i] is not None else "") for i in range(len(headers))})
+    return result
+
+
+def _parse_file(filename: str, content: bytes) -> list[dict]:
+    if filename.lower().endswith(".xlsx"):
+        return _parse_xlsx(content)
+    return _parse_csv(content)
+
+
+def _validate_suppliers(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    valid, errors = [], []
+    tmpl = TEMPLATES["suppliers"]
+    for i, row in enumerate(rows, 1):
+        errs = []
+        for col in tmpl["required"]:
+            if not row.get(col, "").strip():
+                errs.append(f"'{col}' is required")
+        if errs:
+            errors.append({"row_number": i, "error_message": "; ".join(errs), "raw_data": json.dumps(row)})
+        else:
+            valid.append({"row": i, "data": row})
+    return valid, errors
+
+
+def _validate_categories(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    valid, errors = [], []
+    for i, row in enumerate(rows, 1):
+        if not row.get("category_name", "").strip():
+            errors.append({"row_number": i, "error_message": "'category_name' is required", "raw_data": json.dumps(row)})
+        else:
+            valid.append({"row": i, "data": row})
+    return valid, errors
+
+
+def _validate_products(rows: list[dict], db: Session) -> tuple[list[dict], list[dict]]:
+    valid, errors = [], []
+    # Pre-fetch categories by name for lookup
+    cats = {c.category_name: c.category_id for c in db.query(Category).filter(Category.deleted_at.is_(None)).all()}
+    for i, row in enumerate(rows, 1):
+        errs = []
+        if not row.get("product_name", "").strip():
+            errs.append("'product_name' is required")
+        price_str = row.get("sale_price", "").strip()
+        if not price_str:
+            errs.append("'sale_price' is required")
+        else:
+            try:
+                float(price_str)
+            except ValueError:
+                errs.append(f"'sale_price' must be a number, got '{price_str}'")
+        cat_name = row.get("category_name", "").strip()
+        if cat_name and cat_name not in cats:
+            errs.append(f"Category '{cat_name}' not found — create it first")
+        if errs:
+            errors.append({"row_number": i, "error_message": "; ".join(errs), "raw_data": json.dumps(row)})
+        else:
+            enriched = dict(row)
+            enriched["_category_id"] = cats.get(cat_name)
+            valid.append({"row": i, "data": enriched})
+    return valid, errors
+
+
+def _validate_bank_accounts(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    valid, errors = [], []
+    required = ["bank_name", "account_number", "beneficiary_name"]
+    for i, row in enumerate(rows, 1):
+        errs = [f"'{c}' is required" for c in required if not row.get(c, "").strip()]
+        if errs:
+            errors.append({"row_number": i, "error_message": "; ".join(errs), "raw_data": json.dumps(row)})
+        else:
+            valid.append({"row": i, "data": row})
+    return valid, errors
+
+
+def _import_suppliers(valid_rows: list[dict], db: Session, username: str) -> tuple[int, list[dict]]:
+    success, errors = 0, []
+    for item in valid_rows:
+        try:
+            row = item["data"]
+            obj = Supplier(
+                supplier_name=row["supplier_name"].strip(),
+                supplier_contact=row.get("supplier_contact", "").strip() or None,
+                supplier_email=row.get("supplier_email", "").strip() or None,
+                supplier_address=row.get("supplier_address", "").strip() or None,
+                created_by=username,
+            )
+            db.add(obj)
+            db.flush()
+            success += 1
+        except Exception as exc:
+            errors.append({"row_number": item["row"], "error_message": str(exc), "raw_data": json.dumps(item["data"])})
+    return success, errors
+
+
+def _import_categories(valid_rows: list[dict], db: Session, username: str) -> tuple[int, list[dict]]:
+    success, errors = 0, []
+    for item in valid_rows:
+        try:
+            row = item["data"]
+            obj = Category(
+                category_name=row["category_name"].strip(),
+                description=row.get("description", "").strip() or None,
+                created_by=username,
+            )
+            db.add(obj)
+            db.flush()
+            success += 1
+        except Exception as exc:
+            errors.append({"row_number": item["row"], "error_message": str(exc), "raw_data": json.dumps(item["data"])})
+    return success, errors
+
+
+def _import_products(valid_rows: list[dict], db: Session, username: str) -> tuple[int, list[dict]]:
+    success, errors = 0, []
+    for item in valid_rows:
+        try:
+            row = item["data"]
+            min_stock = 0.0
+            try:
+                min_stock = float(row.get("minimum_stock_level", 0) or 0)
+            except (ValueError, TypeError):
+                min_stock = 0.0
+            obj = Product(
+                product_name=row["product_name"].strip(),
+                category_id=row.get("_category_id"),
+                sale_price=float(row["sale_price"]),
+                sku=row.get("sku", "").strip() or None,
+                barcode=row.get("barcode", "").strip() or None,
+                unit=row.get("unit", "PCS").strip() or "PCS",
+                status=row.get("status", "Active").strip() or "Active",
+                minimum_stock_level=min_stock,
+                product_description=row.get("product_description", "").strip() or None,
+                created_by=username,
+            )
+            db.add(obj)
+            db.flush()
+            success += 1
+        except Exception as exc:
+            errors.append({"row_number": item["row"], "error_message": str(exc), "raw_data": json.dumps(item["data"])})
+    return success, errors
+
+
+def _import_bank_accounts(valid_rows: list[dict], db: Session, username: str) -> tuple[int, list[dict]]:
+    success, errors = 0, []
+    for item in valid_rows:
+        try:
+            row = item["data"]
+            is_active_str = str(row.get("is_active", "true")).strip().lower()
+            is_active = is_active_str in ("1", "true", "yes", "active")
+            obj = BankAccount(
+                bank_name=row["bank_name"].strip(),
+                account_number=row["account_number"].strip(),
+                beneficiary_name=row["beneficiary_name"].strip(),
+                is_active=is_active,
+                created_by=username,
+            )
+            db.add(obj)
+            db.flush()
+            success += 1
+        except Exception as exc:
+            errors.append({"row_number": item["row"], "error_message": str(exc), "raw_data": json.dumps(item["data"])})
+    return success, errors
+
+
+# ── Endpoints ────────────────────────────────────────────────────────────────
+
+@router.get("/templates/{import_type}")
+def get_template(
+    import_type: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Return CSV template columns and example row for the given import type."""
+    if import_type not in TEMPLATES:
+        raise HTTPException(status_code=404, detail=f"Unknown import type. Supported: {', '.join(SUPPORTED_TYPES)}")
+    tmpl = TEMPLATES[import_type]
+    # Build CSV string
+    cols = tmpl["columns"]
+    lines = [",".join(cols)]
+    for example_row in tmpl["example"]:
+        lines.append(",".join(str(example_row.get(c, "")) for c in cols))
+    csv_content = "\n".join(lines)
+    from fastapi.responses import Response
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="template_{import_type}.csv"'},
+    )
+
+
+@router.post("/validate/{import_type}", response_model=BulkValidateResponse)
+async def validate_file(
+    import_type: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Parse and validate an uploaded file. Returns preview without importing."""
+    if import_type not in SUPPORTED_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported import type. Supported: {', '.join(SUPPORTED_TYPES)}")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    try:
+        rows = _parse_file(file.filename or "", content)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not parse file: {exc}")
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="No data rows found in file")
+
+    dispatch = {
+        "suppliers": lambda r: _validate_suppliers(r),
+        "categories": lambda r: _validate_categories(r),
+        "products": lambda r: _validate_products(r, db),
+        "bank_accounts": lambda r: _validate_bank_accounts(r),
+    }
+    valid_rows, error_list = dispatch[import_type](rows)
+
+    preview = [item["data"] for item in valid_rows[:20]]  # first 20 valid rows for preview
+
+    return BulkValidateResponse(
+        import_type=import_type,
+        total_rows=len(rows),
+        valid_rows=len(valid_rows),
+        invalid_rows=len(error_list),
+        preview=preview,
+        errors=[BulkImportErrorSchema(**e) for e in error_list],
+    )
+
+
+@router.post("/import/{import_type}", response_model=BulkImportResponse)
+async def import_file(
+    import_type: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Parse, validate, and import an uploaded file into the database."""
+    if import_type not in SUPPORTED_TYPES:
+        raise HTTPException(status_code=400, detail=f"Unsupported import type. Supported: {', '.join(SUPPORTED_TYPES)}")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    try:
+        rows = _parse_file(file.filename or "", content)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Could not parse file: {exc}")
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="No data rows found in file")
+
+    dispatch_validate = {
+        "suppliers": lambda r: _validate_suppliers(r),
+        "categories": lambda r: _validate_categories(r),
+        "products": lambda r: _validate_products(r, db),
+        "bank_accounts": lambda r: _validate_bank_accounts(r),
+    }
+    dispatch_import = {
+        "suppliers": lambda v: _import_suppliers(v, db, current_user.username),
+        "categories": lambda v: _import_categories(v, db, current_user.username),
+        "products": lambda v: _import_products(v, db, current_user.username),
+        "bank_accounts": lambda v: _import_bank_accounts(v, db, current_user.username),
+    }
+
+    valid_rows, validation_errors = dispatch_validate[import_type](rows)
+    success_count, import_errors = dispatch_import[import_type](valid_rows)
+
+    all_errors = validation_errors + import_errors
+    db.flush()
+
+    # Persist import history
+    history = BulkImportHistory(
+        import_type=import_type,
+        filename=file.filename,
+        total_rows=len(rows),
+        success_rows=success_count,
+        error_rows=len(all_errors),
+        status="completed",
+        created_by=current_user.username,
+    )
+    db.add(history)
+    db.flush()
+
+    for err in all_errors:
+        db.add(BulkImportError(
+            import_id=history.import_id,
+            row_number=err.get("row_number"),
+            error_message=err["error_message"],
+            raw_data=err.get("raw_data"),
+        ))
+
+    db.commit()
+
+    return BulkImportResponse(
+        import_id=history.import_id,
+        import_type=import_type,
+        total_rows=len(rows),
+        success_rows=success_count,
+        error_rows=len(all_errors),
+        status="completed",
+        errors=[BulkImportErrorSchema(**e) for e in all_errors],
+    )
+
+
+@router.get("/history", response_model=dict)
+def import_history(
+    import_type: Optional[str] = None,
+    page: int = 1,
+    limit: int = 20,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(BulkImportHistory)
+    if import_type:
+        q = q.filter(BulkImportHistory.import_type == import_type)
+    q = q.order_by(BulkImportHistory.created_at.desc())
+    total = q.count()
+    items = q.offset((page - 1) * limit).limit(limit).all()
+    return {
+        "total": total, "page": page, "limit": limit,
+        "items": [
+            {
+                "import_id": h.import_id,
+                "import_type": h.import_type,
+                "filename": h.filename,
+                "total_rows": h.total_rows,
+                "success_rows": h.success_rows,
+                "error_rows": h.error_rows,
+                "status": h.status,
+                "created_by": h.created_by,
+                "created_at": h.created_at.isoformat() if h.created_at else None,
+            }
+            for h in items
+        ],
+    }
