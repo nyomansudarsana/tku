@@ -4,8 +4,11 @@ set -e
 # Use DATABASE_URL from environment, defaulting to persistent storage at /data
 export DATABASE_URL=${DATABASE_URL:-sqlite:////data/tku.db}
 
-# On first run (no DB file yet), seed initial data
+# Ensure the directory for the database file exists
 DB_FILE="${DATABASE_URL#sqlite:///}"
+mkdir -p "$(dirname "$DB_FILE")"
+
+# On first run (no DB file yet), seed initial data
 if [ ! -f "$DB_FILE" ]; then
     echo "[start] Database not found at $DB_FILE — running initial seed..."
     python seed.py

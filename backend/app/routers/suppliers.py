@@ -134,6 +134,9 @@ def link_product_to_supplier(
         cost_price=data.get("cost_price", 0) or 0,
     )
     db.add(link)
+    # Also set products.supplier_id if the product has no primary supplier yet
+    if not product.supplier_id:
+        product.supplier_id = supplier_id
     db.commit()
     db.refresh(link)
     return {"id": link.id, "supplier_id": supplier_id, "product_id": product_id, "product_name": product.product_name}
@@ -154,5 +157,9 @@ def unlink_product_from_supplier(
     if not link:
         raise HTTPException(status_code=404, detail="Link not found")
     db.delete(link)
+    # Clear products.supplier_id if it points to this supplier
+    product = db.query(Product).filter(Product.product_id == product_id).first()
+    if product and product.supplier_id == supplier_id:
+        product.supplier_id = None
     db.commit()
     return {"message": "Product unlinked"}

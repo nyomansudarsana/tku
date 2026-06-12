@@ -114,18 +114,25 @@ def seed():
     # Products  (sale_price is VAT-inclusive)
     if not db.query(Product).first():
         cat = {c.category_name: c.category_id for c in db.query(Category).all()}
+        sup = {s.supplier_name: s.supplier_id for s in db.query(Supplier).all()}
         products_data = [
-            ("Nazava Tulip Water Filter",         cat.get("Water Filter"), 450000, "Gravity-fed ceramic water filter", "NZV-TULIP", "PCS"),
-            ("Nazava Ario Water Filter",           cat.get("Water Filter"), 350000, "Portable water filter",           "NZV-ARIO",  "PCS"),
-            ("D-Light SQ16 Solar Light",           cat.get("Solar Light"),  280000, "Solar lantern 16 LED",            "DLT-SQ16",  "PCS"),
-            ("D-Light SQ20 Solar Light",           cat.get("Solar Light"),  380000, "Solar lantern 20 LED",            "DLT-SQ20",  "PCS"),
-            ("Organic Coffee Beans",               cat.get("Food"),          85000, "Local Balinese organic coffee",   "FOOD-COFF", "Pack"),
-            ("Luwak Coffee",                       cat.get("Food"),         150000, "Premium Luwak coffee",            "FOOD-LWK",  "Pack"),
-            ("TKU T-Shirt",                        cat.get("Clothing"),     120000, "Tech Kiosk Ubud branded T-shirt", "CLO-TSHIRT","PCS"),
-            ("Water Filter Candle Replacement",    cat.get("Water Filter"),  95000, "Ceramic candle replacement",      "NZV-CNDL",  "PCS"),
+            # (name, category, sale_price, description, sku, unit, supplier_name)
+            ("Nazava Tulip Water Filter",      cat.get("Water Filter"), 450000, "Gravity-fed ceramic water filter", "NZV-TULIP",  "PCS",  "Nazava"),
+            ("Nazava Ario Water Filter",        cat.get("Water Filter"), 350000, "Portable water filter",           "NZV-ARIO",   "PCS",  "Nazava"),
+            ("D-Light SQ16 Solar Light",        cat.get("Solar Light"),  280000, "Solar lantern 16 LED",            "DLT-SQ16",   "PCS",  "D-Light"),
+            ("D-Light SQ20 Solar Light",        cat.get("Solar Light"),  380000, "Solar lantern 20 LED",            "DLT-SQ20",   "PCS",  "D-Light"),
+            ("Organic Coffee Beans",            cat.get("Food"),          85000, "Local Balinese organic coffee",   "FOOD-COFF",  "Pack", "Local Supplier"),
+            ("Luwak Coffee",                    cat.get("Food"),         150000, "Premium Luwak coffee",            "FOOD-LWK",   "Pack", "Local Supplier"),
+            ("TKU T-Shirt",                     cat.get("Clothing"),     120000, "Tech Kiosk Ubud branded T-shirt", "CLO-TSHIRT", "PCS",  "Local Supplier"),
+            ("Water Filter Candle Replacement", cat.get("Water Filter"),  95000, "Ceramic candle replacement",      "NZV-CNDL",   "PCS",  "Nazava"),
         ]
         for p in products_data:
-            db.add(Product(product_name=p[0], category_id=p[1], sale_price=p[2], product_description=p[3], sku=p[4], unit=p[5], status="Active", created_by="system"))
+            db.add(Product(
+                product_name=p[0], category_id=p[1], sale_price=p[2],
+                product_description=p[3], sku=p[4], unit=p[5],
+                supplier_id=sup.get(p[6]),
+                status="Active", created_by="system",
+            ))
         db.commit()
         print("  Products created")
 

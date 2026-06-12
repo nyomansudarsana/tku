@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { productsAPI } from '../api'
 import AsyncDropdown from '../components/AsyncDropdown'
+import SearchableSelect from '../components/SearchableSelect'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import SearchBar from '../components/SearchBar'
@@ -9,7 +10,18 @@ import { formatCurrency } from '../utils/format'
 import { exportCsv } from '../utils/exportCsv'
 
 const UNITS = ['PCS', 'Pack', 'Unit', 'Box', 'Set', 'Kg', 'Liter']
-const empty = { product_name: '', category_id: '', sale_price: '', product_description: '', sku: '', barcode: '', unit: 'PCS', status: 'Active', minimum_stock_level: '0' }
+const empty = {
+  product_name: '',
+  supplier_id: '',
+  category_id: '',
+  sale_price: '',
+  product_description: '',
+  sku: '',
+  barcode: '',
+  unit: 'PCS',
+  status: 'Active',
+  minimum_stock_level: '0',
+}
 
 export default function Products() {
   const [items, setItems] = useState([])
@@ -37,11 +49,12 @@ export default function Products() {
 
   useEffect(() => { load() }, [load])
 
-  const openCreate = () => { setEditing(null); setForm(empty); setModal(true) }
+  const openCreate = () => { setEditing(null); setForm(empty); setSaveError(''); setModal(true) }
   const openEdit = (item) => {
     setEditing(item)
     setForm({
       product_name: item.product_name,
+      supplier_id: item.supplier_id ? String(item.supplier_id) : '',
       category_id: item.category_id ? String(item.category_id) : '',
       sale_price: item.sale_price,
       product_description: item.product_description || '',
@@ -51,6 +64,7 @@ export default function Products() {
       status: item.status,
       minimum_stock_level: item.minimum_stock_level ?? 0,
     })
+    setSaveError('')
     setModal(true)
   }
 
@@ -59,7 +73,13 @@ export default function Products() {
     setSaveError('')
     setLoading(true)
     try {
-      const data = { ...form, sale_price: parseFloat(form.sale_price), category_id: form.category_id ? parseInt(form.category_id) : null, minimum_stock_level: parseFloat(form.minimum_stock_level) || 0 }
+      const data = {
+        ...form,
+        supplier_id: form.supplier_id ? parseInt(form.supplier_id) : null,
+        category_id: form.category_id ? parseInt(form.category_id) : null,
+        sale_price: parseFloat(form.sale_price),
+        minimum_stock_level: parseFloat(form.minimum_stock_level) || 0,
+      }
       if (editing) await productsAPI.update(editing.product_id, data)
       else await productsAPI.create(data)
       setModal(false)
@@ -78,8 +98,20 @@ export default function Products() {
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button className="btn btn-secondary" onClick={() => {
-            const rows = items.map(p => ({ name: p.product_name, sku: p.sku || '', category: p.category?.category_name || '', price: p.sale_price, unit: p.unit, status: p.status, description: p.product_description || '' }))
-            exportCsv(rows, ['name','sku','category','price','unit','status','description'], { name:'Product Name', sku:'SKU', category:'Category', price:'Sale Price', unit:'Unit', status:'Status', description:'Description' }, 'products-export')
+            const rows = items.map(p => ({
+              name: p.product_name,
+              supplier: p.supplier?.supplier_name || '',
+              sku: p.sku || '',
+              category: p.category?.category_name || '',
+              price: p.sale_price,
+              unit: p.unit,
+              status: p.status,
+              description: p.product_description || '',
+            }))
+            exportCsv(rows,
+              ['name','supplier','sku','category','price','unit','status','description'],
+              { name:'Product Name', supplier:'Supplier', sku:'SKU', category:'Category', price:'Sale Price', unit:'Unit', status:'Status', description:'Description' },
+              'products-export')
           }}>Export CSV</button>
           <button className="btn btn-primary" onClick={openCreate}>+ Add Product</button>
         </div>
@@ -111,17 +143,22 @@ export default function Products() {
           <table className="table">
             <thead>
               <tr>
-                <th>#</th><th>SKU</th><th>Product Name</th><th>Category</th><th>Unit</th><th>Price</th><th>Min Stock</th><th>Status</th><th>Actions</th>
+                <th>#</th><th>SKU</th><th>Product Name</th><th>Supplier</th><th>Category</th><th>Unit</th><th>Price</th><th>Min Stock</th><th>Status</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {items.length === 0
-                ? <tr><td colSpan={9} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>No products found</td></tr>
+                ? <tr><td colSpan={10} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>No products found</td></tr>
                 : items.map((item, i) => (
                   <tr key={item.product_id}>
                     <td style={{ color: '#94a3b8' }}>{(page - 1) * limit + i + 1}</td>
                     <td><code style={{ fontSize: '0.75rem', background: '#f1f5f9', padding: '2px 6px', borderRadius: 4 }}>{item.sku || '-'}</code></td>
                     <td style={{ fontWeight: 500 }}>{item.product_name}</td>
+                    <td>
+                      {item.supplier
+                        ? <span style={{ fontSize: '0.8rem', color: '#2563eb', fontWeight: 500 }}>{item.supplier.supplier_name}</span>
+                        : <span style={{ fontSize: '0.8rem', color: '#f59e0b', fontWeight: 500 }}>⚠ No Supplier</span>}
+                    </td>
                     <td>{item.category?.category_name || '-'}</td>
                     <td>{item.unit}</td>
                     <td style={{ fontWeight: 600 }}>{formatCurrency(item.sale_price)}</td>
@@ -143,12 +180,32 @@ export default function Products() {
 
       <Modal open={modal} onClose={() => { setModal(false); setSaveError('') }} title={editing ? 'Edit Product' : 'Add Product'} size="lg">
         <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          {saveError && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '0.5rem', padding: '0.75rem', color: '#dc2626', fontSize: '0.875rem' }}>{saveError}</div>}
+          {saveError && (
+            <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '0.5rem', padding: '0.75rem', color: '#dc2626', fontSize: '0.875rem' }}>
+              {saveError}
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
 
             <div style={{ gridColumn: '1/-1' }}>
               <label className="label">Product Name *</label>
               <input className="input" required value={form.product_name} onChange={e => setForm(f => ({ ...f, product_name: e.target.value }))} />
+            </div>
+
+            <div>
+              <label className="label">Supplier</label>
+              <SearchableSelect
+                endpoint="/suppliers"
+                labelField="supplier_name"
+                valueField="supplier_id"
+                value={form.supplier_id}
+                onChange={v => setForm(f => ({ ...f, supplier_id: v }))}
+                placeholder="Select supplier"
+                emptyHint="No suppliers found"
+              />
+              <p style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.25rem' }}>
+                Sets which supplier this product appears under in Receiving
+              </p>
             </div>
 
             <div>

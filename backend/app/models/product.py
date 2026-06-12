@@ -9,6 +9,7 @@ class Product(Base, AuditMixin):
 
     product_id = Column(Integer, primary_key=True, index=True)
     product_name = Column(String(150), nullable=False, index=True)
+    supplier_id = Column(Integer, ForeignKey("suppliers.supplier_id"), nullable=True)
     category_id = Column(Integer, ForeignKey("categories.category_id"), nullable=True)
     sale_price = Column(Float, default=0.0, nullable=False)
     product_description = Column(Text, nullable=True)
@@ -18,4 +19,5 @@ class Product(Base, AuditMixin):
     status = Column(String(20), default="Active", nullable=False)
     minimum_stock_level = Column(Float, default=0.0, nullable=False)
 
+    supplier = relationship("Supplier", foreign_keys=[supplier_id])
     category = relationship("Category", foreign_keys=[category_id])

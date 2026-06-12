@@ -6,7 +6,7 @@ from datetime import datetime, date
 from ..database import get_db
 from ..models.receiving import Receiving
 from ..models.supplier_return import SupplierReturn
-from ..models.supplier_product import SupplierProduct
+from ..models.product import Product
 from ..models.user import User
 from ..schemas.receiving import ReceivingCreate, ReceivingUpdate, ReceivingResponse
 from ..services.auth import get_current_user
@@ -76,17 +76,17 @@ def create_receiving(
     Inventory is updated with quantity_accepted (not quantity_received).
     A SupplierReturn is auto-created when quantity_rejected > 0.
     """
-    # Validate product is linked to supplier when both are provided
+    # Validate product belongs to the selected supplier
     if data.supplier_id and data.product_id:
-        link = db.query(SupplierProduct).filter(
-            SupplierProduct.supplier_id == data.supplier_id,
-            SupplierProduct.product_id  == data.product_id,
+        product = db.query(Product).filter(
+            Product.product_id == data.product_id,
+            Product.deleted_at.is_(None),
         ).first()
-        if not link:
+        if not product or product.supplier_id != data.supplier_id:
             raise HTTPException(
                 status_code=400,
-                detail="The selected product is not linked to the selected supplier. "
-                       "Go to Suppliers → [Supplier] → Products to add the link.",
+                detail="The selected product is not assigned to the selected supplier. "
+                       "Edit the product in Products → [Product] and set the correct Supplier.",
             )
 
     receiving = Receiving(**data.dict(), created_by=current_user.username)

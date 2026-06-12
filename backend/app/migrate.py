@@ -82,6 +82,7 @@ def run_migrations(db_path: str) -> None:
         _migrate_supplier_products(c)
         _migrate_payment_status(c)
         _migrate_products(c)
+        _migrate_products_supplier_id(c)
         _migrate_receivings(c)
         _migrate_sales_returns(c)
         _migrate_supplier_returns(c)
@@ -144,6 +145,37 @@ def _migrate_products(c) -> None:
                 "ALTER TABLE products ADD COLUMN minimum_stock_level REAL DEFAULT 0"
             )
             logger.info("products: added column minimum_stock_level")
+
+
+def _migrate_products_supplier_id(c) -> None:
+    """Add supplier_id to products; populate from supplier_products for existing data."""
+    if not _table_exists(c, "products"):
+        return
+    if not _column_exists(c, "products", "supplier_id"):
+        c.execute("ALTER TABLE products ADD COLUMN supplier_id INTEGER DEFAULT NULL")
+        logger.info("products: added column supplier_id")
+    # Populate rows where supplier_id is still NULL but a supplier_products link exists.
+    # Takes the link with the lowest id (first-linked supplier) as the primary supplier.
+    if _table_exists(c, "supplier_products"):
+        c.execute("""
+            UPDATE products
+            SET supplier_id = (
+                SELECT sp.supplier_id FROM supplier_products sp
+                WHERE sp.product_id = products.product_id
+                ORDER BY sp.id
+                LIMIT 1
+            )
+            WHERE products.supplier_id IS NULL
+              AND EXISTS (
+                SELECT 1 FROM supplier_products sp
+                WHERE sp.product_id = products.product_id
+              )
+        """)
+        if c.rowcount:
+            logger.info(
+                "products: populated supplier_id from supplier_products for %d rows",
+                c.rowcount,
+            )
 
 
 def _migrate_receivings(c) -> None:

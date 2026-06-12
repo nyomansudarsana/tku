@@ -218,7 +218,7 @@ export default function Receiving() {
               />
               {form.supplier_id && (
                 <p style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.25rem' }}>
-                  Only products linked to this supplier are shown. If none appear, add the link in <strong>Suppliers → Products</strong>.
+                  Only products assigned to this supplier are shown. If none appear, open <strong>Products</strong>, edit the product, and set its Supplier.
                 </p>
               )}
             </div>
