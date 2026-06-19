@@ -1,10 +1,11 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, and_
+from sqlalchemy import func, and_, or_
 from typing import Optional
 from datetime import date, datetime, timedelta
 from ..database import get_db
 from ..models.sales import Sales
+from ..models.sales_detail import SalesDetail
 from ..models.inventory import Inventory
 from ..models.product import Product
 from ..models.category import Category
@@ -73,24 +74,57 @@ def top_products(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    q = db.query(
+    """
+    Aggregate by product across both multi-item sales (via SalesDetail) and
+    legacy single-item sales (via Sales.product_id).
+    """
+    # Multi-item sales: join SalesDetail → Product
+    q_detail = db.query(
+        Product.product_id,
+        Product.product_name,
+        func.sum(SalesDetail.quantity).label("total_qty"),
+        func.sum(SalesDetail.line_total).label("total_revenue"),
+    ).join(SalesDetail, SalesDetail.product_id == Product.product_id
+    ).join(Sales, and_(Sales.sales_id == SalesDetail.sales_id, Sales.deleted_at.is_(None))
+    ).filter(Product.deleted_at.is_(None))
+    if store_id:
+        q_detail = q_detail.filter(Sales.store_id == store_id)
+    if date_from:
+        q_detail = q_detail.filter(Sales.sales_date >= date_from)
+    if date_to:
+        q_detail = q_detail.filter(Sales.sales_date <= date_to)
+    q_detail = q_detail.group_by(Product.product_id, Product.product_name)
+    detail_results = {r[0]: {"product_id": r[0], "product_name": r[1], "total_qty": float(r[2] or 0), "total_revenue": float(r[3] or 0)} for r in q_detail.all()}
+
+    # Legacy single-item sales (product_id on header, no details)
+    q_legacy = db.query(
         Product.product_id,
         Product.product_name,
         func.sum(Sales.quantity).label("total_qty"),
-        func.sum(Sales.grand_total).label("total_revenue")
-    ).join(Sales, Sales.product_id == Product.product_id).filter(
-        Sales.deleted_at.is_(None), Product.deleted_at.is_(None)
+        func.sum(Sales.grand_total).label("total_revenue"),
+    ).join(Sales, Sales.product_id == Product.product_id
+    ).filter(
+        Sales.deleted_at.is_(None),
+        Product.deleted_at.is_(None),
+        Sales.product_id.isnot(None),
+        ~Sales.sales_id.in_(db.query(SalesDetail.sales_id).subquery()),
     )
     if store_id:
-        q = q.filter(Sales.store_id == store_id)
+        q_legacy = q_legacy.filter(Sales.store_id == store_id)
     if date_from:
-        q = q.filter(Sales.sales_date >= date_from)
+        q_legacy = q_legacy.filter(Sales.sales_date >= date_from)
     if date_to:
-        q = q.filter(Sales.sales_date <= date_to)
-    results = q.group_by(Product.product_id, Product.product_name).order_by(
-        func.sum(Sales.grand_total).desc()
-    ).limit(limit).all()
-    return [{"product_id": r[0], "product_name": r[1], "total_qty": float(r[2] or 0), "total_revenue": float(r[3] or 0)} for r in results]
+        q_legacy = q_legacy.filter(Sales.sales_date <= date_to)
+    q_legacy = q_legacy.group_by(Product.product_id, Product.product_name)
+    for r in q_legacy.all():
+        if r[0] in detail_results:
+            detail_results[r[0]]["total_qty"] += float(r[2] or 0)
+            detail_results[r[0]]["total_revenue"] += float(r[3] or 0)
+        else:
+            detail_results[r[0]] = {"product_id": r[0], "product_name": r[1], "total_qty": float(r[2] or 0), "total_revenue": float(r[3] or 0)}
+
+    results = sorted(detail_results.values(), key=lambda x: x["total_revenue"], reverse=True)
+    return results[:limit]
 
 
 @router.get("/sales-by-category")
@@ -101,20 +135,48 @@ def sales_by_category(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    q = db.query(
+    """Aggregate revenue by category across multi-item and legacy single-item sales."""
+    # Multi-item path (via SalesDetail)
+    q_detail = db.query(
         Category.category_name,
-        func.sum(Sales.grand_total).label("total")
-    ).join(Product, Product.category_id == Category.category_id).join(
-        Sales, Sales.product_id == Product.product_id
-    ).filter(Sales.deleted_at.is_(None))
+        func.sum(SalesDetail.line_total).label("total"),
+    ).join(Product, Product.category_id == Category.category_id
+    ).join(SalesDetail, SalesDetail.product_id == Product.product_id
+    ).join(Sales, and_(Sales.sales_id == SalesDetail.sales_id, Sales.deleted_at.is_(None))
+    ).filter(Product.deleted_at.is_(None))
     if store_id:
-        q = q.filter(Sales.store_id == store_id)
+        q_detail = q_detail.filter(Sales.store_id == store_id)
     if date_from:
-        q = q.filter(Sales.sales_date >= date_from)
+        q_detail = q_detail.filter(Sales.sales_date >= date_from)
     if date_to:
-        q = q.filter(Sales.sales_date <= date_to)
-    results = q.group_by(Category.category_name).all()
-    return [{"category": r[0], "total": float(r[1] or 0)} for r in results]
+        q_detail = q_detail.filter(Sales.sales_date <= date_to)
+    q_detail = q_detail.group_by(Category.category_name)
+    totals = {r[0]: float(r[1] or 0) for r in q_detail.all()}
+
+    # Legacy single-item path
+    detail_sales_subq = db.query(SalesDetail.sales_id).subquery()
+    q_legacy = db.query(
+        Category.category_name,
+        func.sum(Sales.grand_total).label("total"),
+    ).join(Product, Product.category_id == Category.category_id
+    ).join(Sales, Sales.product_id == Product.product_id
+    ).filter(
+        Sales.deleted_at.is_(None),
+        Product.deleted_at.is_(None),
+        Sales.product_id.isnot(None),
+        ~Sales.sales_id.in_(detail_sales_subq),
+    )
+    if store_id:
+        q_legacy = q_legacy.filter(Sales.store_id == store_id)
+    if date_from:
+        q_legacy = q_legacy.filter(Sales.sales_date >= date_from)
+    if date_to:
+        q_legacy = q_legacy.filter(Sales.sales_date <= date_to)
+    q_legacy = q_legacy.group_by(Category.category_name)
+    for r in q_legacy.all():
+        totals[r[0]] = totals.get(r[0], 0) + float(r[1] or 0)
+
+    return [{"category": cat, "total": total} for cat, total in totals.items()]
 
 
 @router.get("/sales-by-store")

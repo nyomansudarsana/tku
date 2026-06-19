@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, List
 from datetime import date, datetime
 
@@ -8,15 +8,31 @@ from datetime import date, datetime
 class StockOpnameDetailCreate(BaseModel):
     product_id:   int
     system_qty:   float = 0
-    physical_qty: float
+    good_qty:     float = 0     # sellable units counted (user fills this)
+    damaged_qty:  float = 0     # damaged units explicitly found (user fills this)
     reason:       Optional[str] = None
     remarks:      Optional[str] = None
 
+    @field_validator("good_qty", "damaged_qty")
+    @classmethod
+    def non_negative(cls, v):
+        if v < 0:
+            raise ValueError("Quantity cannot be negative")
+        return v
+
 
 class StockOpnameDetailUpdate(BaseModel):
-    physical_qty: Optional[float] = None
+    good_qty:     Optional[float] = None
+    damaged_qty:  Optional[float] = None
     reason:       Optional[str]   = None
     remarks:      Optional[str]   = None
+
+    @field_validator("good_qty", "damaged_qty")
+    @classmethod
+    def non_negative(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("Quantity cannot be negative")
+        return v
 
 
 class _ProductInfo(BaseModel):
@@ -32,8 +48,10 @@ class StockOpnameDetailResponse(BaseModel):
     opname_id:      int
     product_id:     int
     system_qty:     float
-    physical_qty:   float
-    difference_qty: float
+    good_qty:       float = 0
+    damaged_qty:    float = 0
+    physical_qty:   float          # good_qty + damaged_qty
+    difference_qty: float          # good_qty - system_qty  (inventory adjustment)
     reason:         Optional[str] = None
     remarks:        Optional[str] = None
     product:        Optional[_ProductInfo] = None
@@ -48,6 +66,7 @@ class StockOpnameCreate(BaseModel):
     warehouse_id: Optional[int] = None
     store_id:     Optional[int] = None
     remarks:      Optional[str] = None
+    performed_by: Optional[str] = None  # person who performed the physical count
 
 
 class StockOpnameUpdate(BaseModel):
@@ -56,6 +75,7 @@ class StockOpnameUpdate(BaseModel):
     store_id:     Optional[int]  = None
     status:       Optional[str]  = None
     remarks:      Optional[str]  = None
+    performed_by: Optional[str]  = None
 
 
 class _WarehouseInfo(BaseModel):
@@ -79,6 +99,8 @@ class StockOpnameResponse(BaseModel):
     store_id:     Optional[int] = None
     status:       str
     remarks:      Optional[str] = None
+    performed_by: Optional[str] = None
+    approved_by:  Optional[str] = None
     warehouse:    Optional[_WarehouseInfo] = None
     store:        Optional[_StoreInfo]     = None
     details:      List[StockOpnameDetailResponse] = []
@@ -97,6 +119,8 @@ class StockOpnameSummary(BaseModel):
     store_id:     Optional[int] = None
     status:       str
     remarks:      Optional[str] = None
+    performed_by: Optional[str] = None
+    approved_by:  Optional[str] = None
     warehouse:    Optional[_WarehouseInfo] = None
     store:        Optional[_StoreInfo]     = None
     created_at:   Optional[datetime] = None

@@ -175,12 +175,18 @@ def add_detail(
         ).first()
         system_qty = inv.quantity if inv else 0.0
 
-    diff = round(data.physical_qty - system_qty, 6)
+    good_qty    = data.good_qty
+    damaged_qty = data.damaged_qty
+    physical_qty = round(good_qty + damaged_qty, 6)
+    diff = round(good_qty - system_qty, 6)  # inventory impact: sellable qty vs system
+
     detail = StockOpnameDetail(
         opname_id=opname_id,
         product_id=data.product_id,
         system_qty=system_qty,
-        physical_qty=data.physical_qty,
+        good_qty=good_qty,
+        damaged_qty=damaged_qty,
+        physical_qty=physical_qty,
         difference_qty=diff,
         reason=data.reason,
         remarks=data.remarks,
@@ -217,13 +223,19 @@ def update_detail(
     if not detail:
         raise HTTPException(status_code=404, detail="Detail not found")
 
-    if data.physical_qty is not None:
-        detail.physical_qty = data.physical_qty
-        detail.difference_qty = round(data.physical_qty - detail.system_qty, 6)
+    if data.good_qty is not None:
+        detail.good_qty = data.good_qty
+    if data.damaged_qty is not None:
+        detail.damaged_qty = data.damaged_qty
     if data.reason is not None:
         detail.reason = data.reason
     if data.remarks is not None:
         detail.remarks = data.remarks
+
+    # Recompute derived fields
+    detail.physical_qty   = round(detail.good_qty + detail.damaged_qty, 6)
+    detail.difference_qty = round(detail.good_qty - detail.system_qty, 6)
+
     db.commit()
     return db.query(StockOpnameDetail).options(
         joinedload(StockOpnameDetail.product)
@@ -267,11 +279,15 @@ def approve_opname(
     """
     Approve a stock opname.
 
-    For each detail where |difference_qty| > 0:
-      - diff > 0  →  physical exceeds system → qty_in  = +diff (stock gain)
-      - diff < 0  →  physical < system:
-            if reason is damage-related → reduce available stock AND create DamagedStock record
-            otherwise                  → reduce available stock (unexplained variance)
+    For each detail:
+      - difference_qty = good_qty - system_qty
+      - diff > 0  → physical surplus  → add to sellable inventory
+      - diff < 0  → physical shortfall → remove from sellable inventory
+      - damaged_qty > 0 → create DamagedStock record (inventory deduction
+        is already included in the good_qty → system_qty adjustment above)
+
+    Inventory only tracks SELLABLE stock. Damaged items found during opname
+    are recorded in DamagedStock for traceability but are NOT double-deducted.
     """
     op = _load_opname(db, opname_id)
     if not op:
@@ -285,59 +301,48 @@ def approve_opname(
     if not op.warehouse_id:
         raise HTTPException(status_code=400, detail="A warehouse must be selected to approve")
 
-    DAMAGE_KEYWORDS = {"damaged", "broken", "defective", "expired", "spoiled", "rusty", "mold"}
-
     ref = f"OPNAME-{op.opname_id}"
+
     for detail in op.details:
-        diff = detail.difference_qty
-        if abs(diff) < 0.001:
-            continue
-        try:
-            if diff < 0:
-                reason_lower = (detail.reason or "").lower()
-                is_damage = any(kw in reason_lower for kw in DAMAGE_KEYWORDS)
+        diff = detail.difference_qty  # = good_qty - system_qty
 
-                # Always update available inventory (physical count is truth)
+        # ── Adjust sellable inventory ─────────────────────────────────────────
+        if abs(diff) > 0.001:
+            try:
                 update_inventory_balance(
                     db,
                     product_id=detail.product_id,
                     warehouse_id=op.warehouse_id,
-                    qty_in=0,
-                    qty_out=abs(diff),
-                    transaction_type="OPNAME_DAMAGE" if is_damage else "OPNAME",
-                    reference_no=ref,
-                    created_by=current_user.username,
-                )
-
-                if is_damage:
-                    # Record these units in Damaged Stock for traceability
-                    db.add(DamagedStock(
-                        product_id=detail.product_id,
-                        warehouse_id=op.warehouse_id,
-                        quantity=abs(diff),
-                        damage_reason=f"Opname Variance - {detail.reason or 'Damaged'}",
-                        damage_date=op.opname_date,
-                        source="Stock Opname",
-                        source_reference=ref,
-                        remarks=detail.remarks,
-                        created_by=current_user.username,
-                    ))
-            else:
-                # Positive difference → stock gain
-                update_inventory_balance(
-                    db,
-                    product_id=detail.product_id,
-                    warehouse_id=op.warehouse_id,
-                    qty_in=diff,
-                    qty_out=0,
+                    qty_in=max(0.0, diff),
+                    qty_out=max(0.0, -diff),
                     transaction_type="OPNAME",
                     reference_no=ref,
                     created_by=current_user.username,
                 )
-        except Exception as exc:
-            logger.warning("Inventory update failed for detail %s: %s", detail.id, exc)
+            except Exception as exc:
+                logger.warning("Inventory update failed for detail %s: %s", detail.id, exc)
+
+        # ── Record damaged items found during count ────────────────────────────
+        # These are NOT deducted again — the sellable adjustment already accounts
+        # for them (good_qty excludes the damaged ones).
+        if detail.damaged_qty and detail.damaged_qty > 0.001:
+            try:
+                db.add(DamagedStock(
+                    product_id=detail.product_id,
+                    warehouse_id=op.warehouse_id,
+                    quantity=detail.damaged_qty,
+                    damage_reason=f"Stock Opname - {detail.reason or 'Found damaged during count'}",
+                    damage_date=op.opname_date,
+                    source="Stock Opname",
+                    source_reference=ref,
+                    remarks=detail.remarks,
+                    created_by=current_user.username,
+                ))
+            except Exception as exc:
+                logger.warning("DamagedStock creation failed for detail %s: %s", detail.id, exc)
 
     op.status = "Approved"
+    op.approved_by = current_user.username
     op.modified_by = current_user.username
     db.commit()
     return _load_opname(db, opname_id)
@@ -373,6 +378,7 @@ def populate_from_inventory(
 ):
     """
     Auto-add all products currently in stock for the opname's warehouse.
+    Sets good_qty = system_qty and damaged_qty = 0 as the starting point.
     Skips products already added to this opname.
     """
     op = db.query(StockOpname).filter(
@@ -404,7 +410,9 @@ def populate_from_inventory(
             opname_id=opname_id,
             product_id=inv.product_id,
             system_qty=inv.quantity,
-            physical_qty=inv.quantity,   # start equal; user edits physical count
+            good_qty=inv.quantity,    # user edits this to match physical count
+            damaged_qty=0.0,
+            physical_qty=inv.quantity,
             difference_qty=0.0,
         )
         db.add(detail)

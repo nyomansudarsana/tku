@@ -16,6 +16,8 @@ from .routers import (
 )
 from .routers import sales_returns, bulk_upload
 from .routers import supplier_returns, stock_opnames, damaged_stocks
+# Ensure SalesDetail model is registered with SQLAlchemy before create_all()
+from .models import sales_detail as _sales_detail_model  # noqa: F401
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

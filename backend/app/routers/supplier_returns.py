@@ -12,6 +12,7 @@ from ..schemas.supplier_return import (
     STATUS_TRANSITIONS,
 )
 from ..services.auth import get_current_user
+from ..services.inventory_service import update_inventory_balance
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/supplier-returns", tags=["Supplier Returns"])
@@ -21,6 +22,7 @@ def _load(db, return_id: int):
     return db.query(SupplierReturn).options(
         joinedload(SupplierReturn.supplier),
         joinedload(SupplierReturn.product),
+        joinedload(SupplierReturn.warehouse),
     ).filter(
         SupplierReturn.return_id == return_id,
         SupplierReturn.deleted_at.is_(None),
@@ -36,12 +38,13 @@ def list_supplier_returns(
     date_to:     Optional[date] = None,
     page:        int = Query(1, ge=1),
     limit:       int = Query(20, ge=1, le=500),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
 ):
     q = db.query(SupplierReturn).options(
         joinedload(SupplierReturn.supplier),
         joinedload(SupplierReturn.product),
+        joinedload(SupplierReturn.warehouse),
     ).filter(SupplierReturn.deleted_at.is_(None))
 
     if supplier_id:
@@ -66,9 +69,9 @@ def list_supplier_returns(
 
 @router.post("", response_model=SupplierReturnResponse)
 def create_supplier_return(
-    data: SupplierReturnCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    data:         SupplierReturnCreate,
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
 ):
     # When linked to a receiving, validate quantity ≤ quantity_rejected
     if data.receiving_id:
@@ -100,9 +103,9 @@ def create_supplier_return(
 
 @router.get("/{return_id}", response_model=SupplierReturnResponse)
 def get_supplier_return(
-    return_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    return_id:    int,
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
 ):
     r = _load(db, return_id)
     if not r:
@@ -112,10 +115,10 @@ def get_supplier_return(
 
 @router.put("/{return_id}", response_model=SupplierReturnResponse)
 def update_supplier_return(
-    return_id: int,
-    data: SupplierReturnUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    return_id:    int,
+    data:         SupplierReturnUpdate,
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
 ):
     sr = db.query(SupplierReturn).filter(
         SupplierReturn.return_id == return_id,
@@ -124,22 +127,51 @@ def update_supplier_return(
     if not sr:
         raise HTTPException(status_code=404, detail="Supplier return not found")
 
+    old_status = sr.status
     update_data = data.dict(exclude_unset=True)
 
     # Validate status transition
     new_status = update_data.get("status")
-    if new_status and new_status != sr.status:
-        allowed = STATUS_TRANSITIONS.get(sr.status, set())
+    if new_status and new_status != old_status:
+        allowed = STATUS_TRANSITIONS.get(old_status, set())
         if new_status not in allowed:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot transition from '{sr.status}' to '{new_status}'. "
+                detail=f"Cannot transition from '{old_status}' to '{new_status}'. "
                        f"Allowed next statuses: {sorted(allowed) or 'none'}",
             )
-        logger.info("supplier_return %s: %s → %s", return_id, sr.status, new_status)
+        logger.info("supplier_return %s: %s → %s", return_id, old_status, new_status)
 
     for field, value in update_data.items():
         setattr(sr, field, value)
+
+    # ── Inventory deduction when goods are sent back to supplier ─────────────
+    # Only deduct for manual returns (receiving_id IS NULL) — auto-created returns
+    # from receiving rejections never added to inventory, so no deduction needed.
+    if (
+        new_status == "Sent To Supplier"
+        and old_status != "Sent To Supplier"
+        and sr.receiving_id is None
+        and sr.warehouse_id
+    ):
+        try:
+            update_inventory_balance(
+                db,
+                product_id       = sr.product_id,
+                warehouse_id     = sr.warehouse_id,
+                qty_in           = 0,
+                qty_out          = sr.quantity,
+                transaction_type = "SUPPLIER_RETURN",
+                reference_no     = f"SRTN-{sr.return_id}",
+                created_by       = current_user.username,
+            )
+            logger.info(
+                "supplier_return %s: deducted %.2f units of product %s (sent to supplier)",
+                return_id, sr.quantity, sr.product_id,
+            )
+        except Exception as exc:
+            logger.warning("Inventory deduction failed on supplier return send: %s", exc)
+
     sr.modified_by = current_user.username
     sr.modified_at = datetime.utcnow()
     try:
@@ -153,9 +185,9 @@ def update_supplier_return(
 
 @router.delete("/{return_id}")
 def delete_supplier_return(
-    return_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    return_id:    int,
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
 ):
     sr = db.query(SupplierReturn).filter(
         SupplierReturn.return_id == return_id,

@@ -13,6 +13,8 @@ class StockOpname(Base, AuditMixin):
     store_id     = Column(Integer, ForeignKey("stores.store_id"), nullable=True)
     status       = Column(String(20), nullable=False, default="Draft")  # Draft / Approved / Rejected
     remarks      = Column(Text, nullable=True)
+    performed_by = Column(String(100), nullable=True)  # who performed the physical count
+    approved_by  = Column(String(100), nullable=True)  # set automatically on approval
 
     warehouse = relationship("Warehouse", foreign_keys=[warehouse_id])
     store     = relationship("Store",     foreign_keys=[store_id])
@@ -27,8 +29,10 @@ class StockOpnameDetail(Base):
     opname_id       = Column(Integer, ForeignKey("stock_opnames.opname_id"), nullable=False)
     product_id      = Column(Integer, ForeignKey("products.product_id"), nullable=False)
     system_qty      = Column(Float, nullable=False, default=0)
-    physical_qty    = Column(Float, nullable=False, default=0)
-    difference_qty  = Column(Float, nullable=False, default=0)   # physical - system
+    good_qty        = Column(Float, nullable=False, default=0)   # sellable units counted
+    damaged_qty     = Column(Float, nullable=False, default=0)   # damaged units found
+    physical_qty    = Column(Float, nullable=False, default=0)   # good_qty + damaged_qty (stored for reporting)
+    difference_qty  = Column(Float, nullable=False, default=0)   # good_qty - system_qty  (inventory impact)
     reason          = Column(String(100), nullable=True)
     remarks         = Column(Text, nullable=True)
 

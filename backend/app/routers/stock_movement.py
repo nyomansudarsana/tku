@@ -68,9 +68,15 @@ def create_movement(data: StockMovementCreate, current_user: User = Depends(get_
         update_inventory_balance(db, data.product_id, data.from_warehouse_id, 0, data.quantity, "TRANSFER_OUT", ref, current_user.username)
         update_inventory_balance(db, data.product_id, data.to_warehouse_id, data.quantity, 0, "TRANSFER_IN", ref, current_user.username)
     elif mtype == "ADJUSTMENT":
-        wh_id = data.to_warehouse_id or data.from_warehouse_id
-        if wh_id:
-            update_inventory_balance(db, data.product_id, wh_id, data.quantity, 0, "ADJUSTMENT", ref, current_user.username)
+        # Positive adjustment: use to_warehouse_id (qty_in = increase stock)
+        # Negative adjustment: use from_warehouse_id (qty_out = decrease stock)
+        if data.to_warehouse_id and not data.from_warehouse_id:
+            update_inventory_balance(db, data.product_id, data.to_warehouse_id, data.quantity, 0, "ADJUSTMENT_IN", ref, current_user.username)
+        elif data.from_warehouse_id and not data.to_warehouse_id:
+            update_inventory_balance(db, data.product_id, data.from_warehouse_id, 0, data.quantity, "ADJUSTMENT_OUT", ref, current_user.username)
+        elif data.to_warehouse_id and data.from_warehouse_id:
+            # Both set: treat as positive adjustment to destination
+            update_inventory_balance(db, data.product_id, data.to_warehouse_id, data.quantity, 0, "ADJUSTMENT_IN", ref, current_user.username)
 
     db.commit()
     return load_movement(db, movement.movement_id)

@@ -1,3 +1,4 @@
+import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional
@@ -7,6 +8,9 @@ from ..models.damaged_stock import DamagedStock
 from ..models.user import User
 from ..schemas.damaged_stock import DamagedStockCreate, DamagedStockUpdate, DamagedStockResponse
 from ..services.auth import get_current_user
+from ..services.inventory_service import update_inventory_balance
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/damaged-stocks", tags=["Damaged Stock"])
 
@@ -36,8 +40,8 @@ def list_damaged_stocks(
     date_to:      Optional[date] = None,
     page:         int = Query(1, ge=1),
     limit:        int = Query(20, ge=1, le=500),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
 ):
     q = db.query(DamagedStock).options(
         joinedload(DamagedStock.product),
@@ -66,13 +70,47 @@ def list_damaged_stocks(
 
 @router.post("", response_model=DamagedStockResponse)
 def create_damaged_stock(
-    data: DamagedStockCreate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    data:         DamagedStockCreate,
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
 ):
     record = DamagedStock(**data.dict(), created_by=current_user.username)
     db.add(record)
-    db.commit()
+    db.flush()  # get damaged_stock_id
+
+    # ── Deduct from available inventory ──────────────────────────────────────
+    # Manual damaged-stock entries represent units that are no longer sellable.
+    # Sources auto-created by opname approval / sales-return approval already
+    # deduct inventory at the point they are created; we only deduct here for
+    # records created directly via this endpoint (source != "Stock Opname" and
+    # source != "Customer Return", or when warehouse_id is provided).
+    auto_sources = {"Stock Opname", "Customer Return"}
+    if record.warehouse_id and record.source not in auto_sources:
+        try:
+            update_inventory_balance(
+                db,
+                product_id       = record.product_id,
+                warehouse_id     = record.warehouse_id,
+                qty_in           = 0,
+                qty_out          = record.quantity,
+                transaction_type = "DAMAGED",
+                reference_no     = f"DMG-{record.damaged_stock_id}",
+                created_by       = current_user.username,
+            )
+            logger.info(
+                "damaged_stock %s: deducted %.2f units of product %s from inventory",
+                record.damaged_stock_id, record.quantity, record.product_id,
+            )
+        except Exception as exc:
+            logger.warning("Inventory deduction failed for damaged_stock: %s", exc)
+
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error("create_damaged_stock db.commit failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {exc}")
+
     db.refresh(record)
     return _load(db, record.damaged_stock_id)
 
@@ -80,8 +118,8 @@ def create_damaged_stock(
 @router.get("/{damaged_stock_id}", response_model=DamagedStockResponse)
 def get_damaged_stock(
     damaged_stock_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user:     User    = Depends(get_current_user),
+    db:               Session = Depends(get_db),
 ):
     record = _load(db, damaged_stock_id)
     if not record:
@@ -92,9 +130,9 @@ def get_damaged_stock(
 @router.put("/{damaged_stock_id}", response_model=DamagedStockResponse)
 def update_damaged_stock(
     damaged_stock_id: int,
-    data: DamagedStockUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    data:             DamagedStockUpdate,
+    current_user:     User    = Depends(get_current_user),
+    db:               Session = Depends(get_db),
 ):
     record = db.query(DamagedStock).filter(
         DamagedStock.damaged_stock_id == damaged_stock_id,
@@ -112,8 +150,8 @@ def update_damaged_stock(
 @router.delete("/{damaged_stock_id}")
 def delete_damaged_stock(
     damaged_stock_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user:     User    = Depends(get_current_user),
+    db:               Session = Depends(get_db),
 ):
     record = db.query(DamagedStock).filter(
         DamagedStock.damaged_stock_id == damaged_stock_id,

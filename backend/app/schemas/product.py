@@ -55,6 +55,7 @@ class ProductResponse(ProductBase):
     category: Optional[CategoryInfo] = None
     created_at: Optional[datetime] = None
     minimum_stock_level: float = 0.0
+    available_stock: Optional[float] = None  # populated when in_stock_only=true
 
     class Config:
         from_attributes = True

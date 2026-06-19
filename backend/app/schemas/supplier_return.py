@@ -19,6 +19,7 @@ STATUS_TRANSITIONS: dict = {
 class SupplierReturnCreate(BaseModel):
     supplier_id:  int
     product_id:   int
+    warehouse_id: Optional[int] = None
     return_date:  date
     quantity:     float
     reason:       Optional[str] = None
@@ -33,6 +34,7 @@ class SupplierReturnUpdate(BaseModel):
     reason:       Optional[str]   = None
     status:       Optional[str]   = None
     remarks:      Optional[str]   = None
+    warehouse_id: Optional[int]   = None
 
     @field_validator("status")
     @classmethod
@@ -56,18 +58,27 @@ class _ProductInfo(BaseModel):
         from_attributes = True
 
 
+class _WarehouseInfo(BaseModel):
+    warehouse_id:   int
+    warehouse_name: str
+    class Config:
+        from_attributes = True
+
+
 class SupplierReturnResponse(BaseModel):
     return_id:    int
     receiving_id: Optional[int]  = None
     supplier_id:  int
     product_id:   int
+    warehouse_id: Optional[int]  = None
     return_date:  date
     quantity:     float
     reason:       Optional[str]  = None
     status:       str
     remarks:      Optional[str]  = None
-    supplier:     Optional[_SupplierInfo] = None
-    product:      Optional[_ProductInfo]  = None
+    supplier:     Optional[_SupplierInfo]  = None
+    product:      Optional[_ProductInfo]   = None
+    warehouse:    Optional[_WarehouseInfo] = None
     created_at:   Optional[datetime] = None
     created_by:   Optional[str] = None
 

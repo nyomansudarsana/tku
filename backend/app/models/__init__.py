@@ -9,6 +9,7 @@ from .receiving import Receiving
 from .inventory import Inventory
 from .stock_movement import StockMovement
 from .sales import Sales
+from .sales_detail import SalesDetail
 from .payment import Payment
 from .inventory_ledger import InventoryLedger
 from .supplier_product import SupplierProduct

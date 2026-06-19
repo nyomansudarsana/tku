@@ -36,6 +36,7 @@ export default function AsyncDropdown({
   emptyHint,
   className = '',
   style = {},
+  formatLabel = null,  // optional: (opt) => string — overrides labelField for display
 }) {
   const [options, setOptions] = useState([])
   const [status, setStatus] = useState('idle') // idle | loading | ok | error | empty
@@ -121,7 +122,7 @@ export default function AsyncDropdown({
             <option value="">{placeholder}</option>
             {options.map((opt) => (
               <option key={opt[valueField]} value={opt[valueField]}>
-                {opt[labelField]}
+                {formatLabel ? formatLabel(opt) : opt[labelField]}
               </option>
             ))}
           </>

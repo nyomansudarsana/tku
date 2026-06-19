@@ -56,6 +56,7 @@ def list_products(
     status: Optional[str] = None,
     supplier_id: Optional[int] = None,
     in_stock_only: Optional[bool] = None,
+    warehouse_id: Optional[int] = None,  # when combined with in_stock_only, scopes to this warehouse
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=2000),
     current_user: User = Depends(get_current_user),
@@ -76,16 +77,41 @@ def list_products(
         # Filter directly by products.supplier_id — the primary supplier relationship.
         q = q.filter(Product.supplier_id == supplier_id)
     if in_stock_only:
+        inv_filter = [Inventory.deleted_at.is_(None)]
+        if warehouse_id:
+            # Scope to the specific warehouse selected in the sales form
+            inv_filter.append(Inventory.warehouse_id == warehouse_id)
         in_stock_subq = (
             db.query(Inventory.product_id)
-            .filter(Inventory.deleted_at.is_(None))
+            .filter(*inv_filter)
             .group_by(Inventory.product_id)
             .having(func.sum(Inventory.quantity) > 0)
             .subquery()
         )
         q = q.filter(Product.product_id.in_(in_stock_subq))
+
     total = q.count()
     items = q.offset((page - 1) * limit).limit(limit).all()
+
+    # Populate available_stock on each product when in_stock_only is requested.
+    # This avoids N+1: one batch inventory query for all returned products.
+    if in_stock_only and items:
+        inv_q = (
+            db.query(Inventory.product_id, func.sum(Inventory.quantity).label("qty"))
+            .filter(
+                Inventory.product_id.in_([p.product_id for p in items]),
+                Inventory.deleted_at.is_(None),
+            )
+        )
+        if warehouse_id:
+            inv_q = inv_q.filter(Inventory.warehouse_id == warehouse_id)
+        inv_map = {
+            row.product_id: max(0.0, float(row.qty or 0))
+            for row in inv_q.group_by(Inventory.product_id).all()
+        }
+        for p in items:
+            p.available_stock = inv_map.get(p.product_id, 0.0)
+
     return {"total": total, "page": page, "limit": limit, "items": [ProductResponse.from_orm(p) for p in items]}
 
 
@@ -136,3 +162,47 @@ def delete_product(product_id: int, current_user: User = Depends(get_current_use
     product.deleted_by = current_user.username
     db.commit()
     return {"message": "Product deleted"}
+
+
+@router.get("/{product_id}/available-stock")
+def get_available_stock(
+    product_id:   int,
+    warehouse_id: Optional[int] = None,
+    current_user: User    = Depends(get_current_user),
+    db:           Session = Depends(get_db),
+):
+    """
+    Return available stock for a product, optionally filtered by warehouse.
+
+    Available stock = sum of Inventory.quantity (the running balance already
+    accounts for receiving, sales, opname adjustments, returns, and movements).
+    """
+    product = _load_product(db, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    q = db.query(
+        Inventory.warehouse_id,
+        func.sum(Inventory.quantity).label("available"),
+    ).filter(
+        Inventory.product_id == product_id,
+        Inventory.deleted_at.is_(None),
+    )
+    if warehouse_id:
+        q = q.filter(Inventory.warehouse_id == warehouse_id)
+    q = q.group_by(Inventory.warehouse_id)
+    rows = q.all()
+
+    total_available = sum(r.available for r in rows if r.available and r.available > 0)
+    by_warehouse = [
+        {"warehouse_id": r.warehouse_id, "available": max(0.0, float(r.available or 0))}
+        for r in rows
+    ]
+
+    return {
+        "product_id":        product_id,
+        "product_name":      product.product_name,
+        "total_available":   max(0.0, float(total_available)),
+        "by_warehouse":      by_warehouse,
+        "minimum_stock_level": product.minimum_stock_level,
+    }

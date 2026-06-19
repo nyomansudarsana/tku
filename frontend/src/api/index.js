@@ -35,11 +35,12 @@ export const categoriesAPI = {
 }
 
 export const productsAPI = {
-  list:   (params)   => api.get('/products', { params }),
-  create: (data)     => api.post('/products', data),
-  get:    (id)       => api.get(`/products/${id}`),
-  update: (id, data) => api.put(`/products/${id}`, data),
-  delete: (id)       => api.delete(`/products/${id}`),
+  list:              (params)          => api.get('/products', { params }),
+  create:            (data)            => api.post('/products', data),
+  get:               (id)              => api.get(`/products/${id}`),
+  update:            (id, data)        => api.put(`/products/${id}`, data),
+  delete:            (id)              => api.delete(`/products/${id}`),
+  getAvailableStock: (id, params = {}) => api.get(`/products/${id}/available-stock`, { params }),
 }
 
 export const warehousesAPI = {
