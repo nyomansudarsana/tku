@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { stockOpnamesAPI } from '../api'
+import { stockOpnamesAPI, inventoriesAPI } from '../api'
 import SearchableSelect from '../components/SearchableSelect'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
@@ -23,10 +23,23 @@ function StatusBadge({ status }) {
   )
 }
 
-function DiffBadge({ diff }) {
-  if (Math.abs(diff) < 0.001) return <span style={{ color: '#94a3b8' }}>—</span>
+function VarianceBadge({ diff }) {
+  if (Math.abs(diff) < 0.001) {
+    return <span style={{ fontWeight: 600, color: '#94a3b8' }}>0</span>
+  }
   const color = diff > 0 ? '#16a34a' : '#dc2626'
-  return <span style={{ fontWeight: 700, color }}>{diff > 0 ? '+' : ''}{formatNumber(diff)}</span>
+  const bg    = diff > 0 ? '#dcfce7' : '#fee2e2'
+  return (
+    <span style={{
+      fontWeight: 700, color,
+      background: bg,
+      padding: '0.1rem 0.4rem',
+      borderRadius: '0.25rem',
+      fontSize: '0.8rem',
+    }}>
+      {diff > 0 ? '+' : ''}{formatNumber(diff)}
+    </span>
+  )
 }
 
 export default function StockOpname() {
@@ -51,12 +64,27 @@ export default function StockOpname() {
 
   // Detail add form
   const emptyAdd = () => ({ product_id: '', good_qty: '', damaged_qty: '0', reason: '', remarks: '' })
-  const [addProduct, setAddProduct]   = useState(emptyAdd())
-  const [addError,   setAddError]     = useState('')
-  const [addLoading, setAddLoading]   = useState(false)
-  const [populating, setPopulating]   = useState(false)
-  const [approving,  setApproving]    = useState(false)
+  const [addProduct,        setAddProduct]        = useState(emptyAdd())
+  const [addError,          setAddError]          = useState('')
+  const [addLoading,        setAddLoading]        = useState(false)
+  const [populating,        setPopulating]        = useState(false)
+  const [approving,         setApproving]         = useState(false)
+  const [systemQtyPreview,  setSystemQtyPreview]  = useState(null)
+  const [systemQtyFetching, setSystemQtyFetching] = useState(false)
   const limit = 15
+
+  // Fetch system qty when product is selected in add form
+  useEffect(() => {
+    if (!addProduct.product_id || !selected?.warehouse_id) {
+      setSystemQtyPreview(null)
+      return
+    }
+    setSystemQtyFetching(true)
+    inventoriesAPI.list({ product_id: addProduct.product_id, warehouse_id: selected.warehouse_id, limit: 1 })
+      .then(res => setSystemQtyPreview(res.data.items?.[0]?.quantity ?? 0))
+      .catch(() => setSystemQtyPreview(0))
+      .finally(() => setSystemQtyFetching(false))
+  }, [addProduct.product_id, selected?.warehouse_id])
 
   const load = useCallback(async () => {
     const res = await stockOpnamesAPI.list({ page, limit })
@@ -71,6 +99,7 @@ export default function StockOpname() {
     setSelected(res.data)
     setAddProduct(emptyAdd())
     setAddError('')
+    setSystemQtyPreview(null)
     setDetailModal(true)
   }
 
@@ -118,8 +147,8 @@ export default function StockOpname() {
     if (!addProduct.product_id) { setAddError('Select a product'); return }
     const goodQty    = parseFloat(addProduct.good_qty)
     const damagedQty = parseFloat(addProduct.damaged_qty) || 0
-    if (isNaN(goodQty) || goodQty < 0)  { setAddError('Good quantity must be ≥ 0'); return }
-    if (damagedQty < 0)                  { setAddError('Damaged quantity must be ≥ 0'); return }
+    if (isNaN(goodQty) || goodQty < 0) { setAddError('Good quantity must be ≥ 0'); return }
+    if (damagedQty < 0)                { setAddError('Damaged quantity must be ≥ 0'); return }
     setAddLoading(true)
     try {
       await stockOpnamesAPI.addDetail(selected.opname_id, {
@@ -130,6 +159,7 @@ export default function StockOpname() {
         remarks:     addProduct.remarks || null,
       })
       setAddProduct(emptyAdd())
+      setSystemQtyPreview(null)
       await refreshSelected()
     } catch (err) {
       setAddError(err.response?.data?.detail || 'Failed to add product.')
@@ -156,7 +186,7 @@ export default function StockOpname() {
   }
 
   const handleApprove = async () => {
-    if (!window.confirm('Approve this Stock Opname? Inventory will be adjusted to match good (sellable) counts, and damaged items will be recorded separately.')) return
+    if (!window.confirm('Approve this Stock Opname?\n\nInventory will be adjusted to match Good Qty counts.\nDamaged items will be recorded separately in Damaged Stock.')) return
     setApproving(true)
     try {
       await stockOpnamesAPI.approve(selected.opname_id)
@@ -168,7 +198,7 @@ export default function StockOpname() {
   }
 
   const handleReject = async () => {
-    if (!window.confirm('Reject this Stock Opname?')) return
+    if (!window.confirm('Reject this Stock Opname? No inventory changes will be made.')) return
     try {
       await stockOpnamesAPI.reject(selected.opname_id)
       await refreshSelected()
@@ -183,13 +213,12 @@ export default function StockOpname() {
     load()
   }
 
-  // ── Opname summary stats ────────────────────────────────────────────────────
   const opnameSummary = (details) => {
     if (!details || details.length === 0) return null
-    const withDiff    = details.filter(d => Math.abs(d.difference_qty) > 0.001)
-    const withDamage  = details.filter(d => d.damaged_qty > 0.001)
-    const totalDamage = details.reduce((s, d) => s + (d.damaged_qty || 0), 0)
-    return { withDiff: withDiff.length, withDamage: withDamage.length, totalDamage }
+    const withVariance = details.filter(d => Math.abs(d.difference_qty) > 0.001)
+    const withDamage   = details.filter(d => d.damaged_qty > 0.001)
+    const totalDamage  = details.reduce((s, d) => s + (d.damaged_qty || 0), 0)
+    return { withVariance: withVariance.length, withDamage: withDamage.length, totalDamage }
   }
 
   const isEditable = selected && selected.status === 'Draft'
@@ -200,7 +229,7 @@ export default function StockOpname() {
         <div>
           <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1e293b' }}>Stock Opname</h1>
           <p style={{ color: '#64748b', fontSize: '0.875rem' }}>
-            Physical count per warehouse — Good qty adjusts inventory, Damaged qty creates damage records
+            Physical stock count — Good Qty adjusts available inventory, Damaged Qty creates damage records
           </p>
         </div>
         <button className="btn btn-primary" onClick={() => {
@@ -317,6 +346,7 @@ export default function StockOpname() {
           const summary = opnameSummary(selected.details)
           return (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+
               {/* Header info */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem' }}>
                 {[
@@ -340,7 +370,7 @@ export default function StockOpname() {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem' }}>
                   <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '0.5rem', padding: '0.625rem 0.875rem' }}>
                     <div style={{ fontSize: '0.65rem', fontWeight: 700, color: '#16a34a', textTransform: 'uppercase', marginBottom: '0.25rem' }}>Inventory Adjusted</div>
-                    <div style={{ fontWeight: 700, fontSize: '1rem', color: '#166534' }}>{summary.withDiff} product(s)</div>
+                    <div style={{ fontWeight: 700, fontSize: '1rem', color: '#166534' }}>{summary.withVariance} product(s)</div>
                   </div>
                   <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: '0.5rem', padding: '0.625rem 0.875rem' }}>
                     <div style={{ fontSize: '0.65rem', fontWeight: 700, color: '#c2410c', textTransform: 'uppercase', marginBottom: '0.25rem' }}>Damage Recorded</div>
@@ -357,7 +387,7 @@ export default function StockOpname() {
               {selected.status === 'Draft' && (
                 <div style={{ display: 'flex', gap: '0.75rem', padding: '0.875rem', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '0.5rem' }}>
                   <div style={{ flex: 1, fontSize: '0.8125rem', color: '#78350f' }}>
-                    <strong>Ready to approve?</strong> Inventory will be updated to match <strong>Good Qty</strong> counts. Damaged items will be added to Damaged Stock records for traceability.
+                    <strong>Ready to approve?</strong> Inventory will update to match <strong>Good Qty</strong> counts. Damaged items go to Damaged Stock records.
                   </div>
                   <button
                     className="btn"
@@ -375,7 +405,7 @@ export default function StockOpname() {
 
               {selected.status === 'Approved' && (
                 <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '0.5rem', padding: '0.75rem 1rem', fontSize: '0.8125rem', color: '#166534', fontWeight: 500 }}>
-                  This opname is approved. Inventory adjusted to good counts. Damaged items recorded in Damaged Stock.
+                  This opname is approved. Inventory adjusted to Good Qty counts. Damaged items recorded in Damaged Stock.
                 </div>
               )}
 
@@ -393,15 +423,15 @@ export default function StockOpname() {
                       {populating ? 'Loading...' : '+ Auto-fill from Inventory'}
                     </button>
                     <span style={{ fontSize: '0.75rem', color: '#64748b', lineHeight: 1.6 }}>
-                      Adds all products in this warehouse with system qty pre-filled as Good Qty (edit counts below)
+                      Adds all products in this warehouse with current system qty as starting point
                     </span>
                   </div>
 
-                  {/* Legend */}
+                  {/* Field legend */}
                   <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '0.75rem', fontSize: '0.72rem', color: '#64748b' }}>
                     <span><strong style={{ color: '#16a34a' }}>Good Qty</strong> — sellable units counted</span>
-                    <span><strong style={{ color: '#d97706' }}>Damaged Qty</strong> — damaged units found (recorded separately, not double-deducted)</span>
-                    <span><strong style={{ color: '#2563eb' }}>Difference</strong> = Good Qty − System Qty (this adjusts inventory)</span>
+                    <span><strong style={{ color: '#d97706' }}>Damaged Qty</strong> — damaged units (tracked separately, not double-deducted)</span>
+                    <span><strong style={{ color: '#7c3aed' }}>Variance</strong> = Good − System (adjusts inventory)</span>
                   </div>
 
                   <form onSubmit={handleAddDetail} style={{ display: 'flex', gap: '0.625rem', alignItems: 'flex-end', flexWrap: 'wrap' }}>
@@ -420,14 +450,39 @@ export default function StockOpname() {
                         placeholder="Select product..."
                       />
                     </div>
+
+                    {/* System Qty — auto-populated, read-only */}
+                    <div style={{ flex: '0 0 90px' }}>
+                      <label className="label" style={{ fontSize: '0.72rem', color: '#475569' }}>System Qty</label>
+                      <input
+                        className="input"
+                        type="text"
+                        readOnly
+                        value={
+                          !addProduct.product_id    ? '—' :
+                          systemQtyFetching         ? '...' :
+                          systemQtyPreview === null ? '—' :
+                          formatNumber(systemQtyPreview)
+                        }
+                        style={{
+                          background: '#f1f5f9',
+                          borderColor: '#d1d5db',
+                          cursor: 'default',
+                          color: '#475569',
+                          fontWeight: 600,
+                          textAlign: 'right',
+                        }}
+                      />
+                    </div>
+
                     <div style={{ flex: '0 0 100px' }}>
-                      <label className="label" style={{ fontSize: '0.72rem', color: '#15803d' }}>Good Qty</label>
+                      <label className="label" style={{ fontSize: '0.72rem', color: '#15803d' }}>Good Qty *</label>
                       <input
                         className="input" type="number" min="0" step="0.01"
                         value={addProduct.good_qty}
                         onChange={e => setAddProduct(p => ({ ...p, good_qty: e.target.value }))}
                         placeholder="e.g. 93"
-                        style={{ borderColor: '#86efac' }}
+                        style={{ borderColor: '#86efac', textAlign: 'right' }}
                       />
                     </div>
                     <div style={{ flex: '0 0 100px' }}>
@@ -437,9 +492,20 @@ export default function StockOpname() {
                         value={addProduct.damaged_qty}
                         onChange={e => setAddProduct(p => ({ ...p, damaged_qty: e.target.value }))}
                         placeholder="0"
-                        style={{ borderColor: '#fcd34d' }}
+                        style={{ borderColor: '#fcd34d', textAlign: 'right' }}
                       />
                     </div>
+
+                    {/* Live variance preview */}
+                    {systemQtyPreview !== null && addProduct.good_qty !== '' && (
+                      <div style={{ flex: '0 0 80px' }}>
+                        <label className="label" style={{ fontSize: '0.72rem', color: '#7c3aed' }}>Variance</label>
+                        <div style={{ padding: '0.5rem 0.375rem', textAlign: 'right' }}>
+                          <VarianceBadge diff={parseFloat(addProduct.good_qty || 0) - systemQtyPreview} />
+                        </div>
+                      </div>
+                    )}
+
                     <div style={{ flex: '0 0 150px' }}>
                       <label className="label" style={{ fontSize: '0.72rem' }}>Reason (if diff)</label>
                       <select className="input" value={addProduct.reason} onChange={e => setAddProduct(p => ({ ...p, reason: e.target.value }))}>
@@ -454,17 +520,22 @@ export default function StockOpname() {
                 </div>
               )}
 
-              {/* Products table */}
+              {/* Products count table */}
               <div>
                 <div style={{ fontWeight: 600, fontSize: '0.8125rem', color: '#1e293b', marginBottom: '0.5rem' }}>
                   Products ({selected.details?.length || 0})
+                  {isEditable && (
+                    <span style={{ marginLeft: '0.5rem', fontSize: '0.72rem', fontWeight: 400, color: '#64748b' }}>
+                      — edit counts directly in the table, then click Save on changed rows
+                    </span>
+                  )}
                 </div>
                 {(!selected.details || selected.details.length === 0) ? (
                   <div style={{ textAlign: 'center', padding: '1.5rem', color: '#94a3b8', background: '#f8fafc', borderRadius: '0.5rem', border: '1px dashed #d1d5db' }}>
                     No products added yet. Use "Auto-fill from Inventory" or add manually above.
                   </div>
                 ) : (
-                  <div className="table-container" style={{ maxHeight: '340px', overflowY: 'auto' }}>
+                  <div className="table-container" style={{ maxHeight: '360px', overflowY: 'auto' }}>
                     <table className="table" style={{ fontSize: '0.8125rem' }}>
                       <thead>
                         <tr>
@@ -472,10 +543,10 @@ export default function StockOpname() {
                           <th style={{ textAlign: 'right' }}>System Qty</th>
                           <th style={{ textAlign: 'right', color: '#15803d' }}>Good Qty</th>
                           <th style={{ textAlign: 'right', color: '#d97706' }}>Damaged Qty</th>
-                          <th style={{ textAlign: 'right' }}>Total Physical</th>
-                          <th style={{ textAlign: 'right', color: '#2563eb' }}>Difference</th>
+                          <th style={{ textAlign: 'right' }}>Physical Qty</th>
+                          <th style={{ textAlign: 'right', color: '#7c3aed' }}>Variance</th>
                           <th>Reason</th>
-                          {isEditable && <th></th>}
+                          {isEditable && <th style={{ width: '80px' }}></th>}
                         </tr>
                       </thead>
                       <tbody>
@@ -512,55 +583,67 @@ export default function StockOpname() {
   )
 }
 
-// ── Editable detail row ────────────────────────────────────────────────────────
+// ── Inline-editable detail row ─────────────────────────────────────────────────
+// In Draft mode all rows show inputs directly — no Edit toggle needed.
+// A "Save" button appears only when the row has unsaved changes.
 function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
-  const [editing,    setEditing]    = useState(false)
-  const [goodQty,    setGoodQty]    = useState(String(detail.good_qty ?? detail.physical_qty))
-  const [damagedQty, setDamagedQty] = useState(String(detail.damaged_qty ?? 0))
-  const [reason,     setReason]     = useState(detail.reason || '')
+  const initGoodQty    = String(detail.good_qty    ?? detail.physical_qty ?? 0)
+  const initDamagedQty = String(detail.damaged_qty ?? 0)
+  const initReason     = detail.reason || ''
 
-  const previewGoodDiff = parseFloat(goodQty || 0) - detail.system_qty
+  const [goodQty,    setGoodQty]    = useState(initGoodQty)
+  const [damagedQty, setDamagedQty] = useState(initDamagedQty)
+  const [reason,     setReason]     = useState(initReason)
+  const [saving,     setSaving]     = useState(false)
+
+  // Sync local state when detail prop changes (after parent refreshes)
+  useEffect(() => {
+    setGoodQty(String(detail.good_qty    ?? detail.physical_qty ?? 0))
+    setDamagedQty(String(detail.damaged_qty ?? 0))
+    setReason(detail.reason || '')
+  }, [detail.good_qty, detail.damaged_qty, detail.reason, detail.physical_qty])
+
+  const dirty = (
+    goodQty    !== String(detail.good_qty    ?? detail.physical_qty ?? 0) ||
+    damagedQty !== String(detail.damaged_qty ?? 0) ||
+    reason     !== (detail.reason || '')
+  )
+
+  const liveVariance = parseFloat(goodQty    || 0) - detail.system_qty
+  const livePhysical = parseFloat(goodQty    || 0) + parseFloat(damagedQty || 0)
 
   const save = async () => {
     const gq = parseFloat(goodQty)
     const dq = parseFloat(damagedQty) || 0
     if (isNaN(gq) || gq < 0) return
     if (dq < 0) return
+    setSaving(true)
     await onUpdate(detail.id, gq, dq, reason || null)
-    setEditing(false)
+    setSaving(false)
   }
 
-  const cancel = () => {
-    setGoodQty(String(detail.good_qty ?? detail.physical_qty))
-    setDamagedQty(String(detail.damaged_qty ?? 0))
-    setReason(detail.reason || '')
-    setEditing(false)
-  }
-
-  const inputStyle = (green) => ({
+  const inputStyle = (colorBorder) => ({
     width: '80px',
     padding: '0.25rem 0.375rem',
-    border: `1px solid ${green ? '#86efac' : '#fcd34d'}`,
+    border: `1px solid ${colorBorder}`,
     borderRadius: '0.375rem',
     fontSize: '0.8rem',
     textAlign: 'right',
   })
 
-  const goodQtyDisplay  = detail.good_qty    ?? detail.physical_qty
-  const damagedDisplay  = detail.damaged_qty ?? 0
-  const physicalDisplay = goodQtyDisplay + damagedDisplay
-
-  if (editing) {
+  if (editable) {
     return (
-      <tr style={{ background: '#fafafa' }}>
+      <tr style={{ background: dirty ? '#fffbeb' : undefined, transition: 'background 0.15s' }}>
         <td style={{ fontWeight: 500 }}>{detail.product?.product_name || `#${detail.product_id}`}</td>
-        <td style={{ textAlign: 'right' }}>{formatNumber(detail.system_qty)}</td>
+        <td style={{ textAlign: 'right', color: '#475569', fontWeight: 600 }}>
+          {formatNumber(detail.system_qty)}
+        </td>
         <td style={{ textAlign: 'right' }}>
           <input
             type="number" min="0" step="0.01"
             value={goodQty}
             onChange={e => setGoodQty(e.target.value)}
-            style={inputStyle(true)}
+            style={inputStyle('#86efac')}
           />
         </td>
         <td style={{ textAlign: 'right' }}>
@@ -568,50 +651,62 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
             type="number" min="0" step="0.01"
             value={damagedQty}
             onChange={e => setDamagedQty(e.target.value)}
-            style={inputStyle(false)}
+            style={inputStyle('#fcd34d')}
           />
         </td>
-        <td style={{ textAlign: 'right', color: '#94a3b8', fontSize: '0.75rem' }}>
-          {formatNumber((parseFloat(goodQty) || 0) + (parseFloat(damagedQty) || 0))}
+        <td style={{ textAlign: 'right', color: '#64748b', fontSize: '0.75rem' }}>
+          {formatNumber(livePhysical)}
         </td>
         <td style={{ textAlign: 'right' }}>
-          <DiffBadge diff={previewGoodDiff} />
+          <VarianceBadge diff={liveVariance} />
         </td>
         <td>
-          <select value={reason} onChange={e => setReason(e.target.value)} style={{ fontSize: '0.75rem', padding: '0.2rem 0.375rem', border: '1px solid #d1d5db', borderRadius: '0.375rem' }}>
+          <select
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            style={{ fontSize: '0.75rem', padding: '0.2rem 0.375rem', border: '1px solid #d1d5db', borderRadius: '0.375rem', minWidth: '90px' }}
+          >
             <option value="">No reason</option>
             {reasons.map(r => <option key={r}>{r}</option>)}
           </select>
         </td>
         <td>
-          <div style={{ display: 'flex', gap: '0.25rem' }}>
-            <button onClick={save} style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: '#dcfce7', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: '0.25rem', cursor: 'pointer', fontWeight: 600 }}>Save</button>
-            <button onClick={cancel} style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: '#f1f5f9', color: '#64748b', border: '1px solid #d1d5db', borderRadius: '0.25rem', cursor: 'pointer' }}>Cancel</button>
+          <div style={{ display: 'flex', gap: '0.25rem', justifyContent: 'flex-end' }}>
+            {dirty && (
+              <button
+                onClick={save}
+                disabled={saving}
+                style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: '#dcfce7', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: '0.25rem', cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap' }}
+              >
+                {saving ? '...' : 'Save'}
+              </button>
+            )}
+            <button
+              onClick={() => onDelete(detail.id)}
+              style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: '#fee2e2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: '0.25rem', cursor: 'pointer', fontWeight: 600 }}
+            >✕</button>
           </div>
         </td>
       </tr>
     )
   }
 
+  // Read-only view (Approved / Rejected)
+  const goodDisplay    = detail.good_qty    ?? detail.physical_qty ?? 0
+  const damagedDisplay = detail.damaged_qty ?? 0
+  const physicalTotal  = goodDisplay + damagedDisplay
+
   return (
     <tr>
       <td style={{ fontWeight: 500 }}>{detail.product?.product_name || `#${detail.product_id}`}</td>
-      <td style={{ textAlign: 'right' }}>{formatNumber(detail.system_qty)}</td>
-      <td style={{ textAlign: 'right', fontWeight: 600, color: '#166534' }}>{formatNumber(goodQtyDisplay)}</td>
+      <td style={{ textAlign: 'right', color: '#475569' }}>{formatNumber(detail.system_qty)}</td>
+      <td style={{ textAlign: 'right', fontWeight: 600, color: '#166534' }}>{formatNumber(goodDisplay)}</td>
       <td style={{ textAlign: 'right', fontWeight: damagedDisplay > 0 ? 600 : 400, color: damagedDisplay > 0 ? '#c2410c' : '#94a3b8' }}>
         {damagedDisplay > 0 ? formatNumber(damagedDisplay) : '—'}
       </td>
-      <td style={{ textAlign: 'right', color: '#64748b', fontSize: '0.75rem' }}>{formatNumber(physicalDisplay)}</td>
-      <td style={{ textAlign: 'right' }}><DiffBadge diff={detail.difference_qty} /></td>
+      <td style={{ textAlign: 'right', color: '#64748b', fontSize: '0.75rem' }}>{formatNumber(physicalTotal)}</td>
+      <td style={{ textAlign: 'right' }}><VarianceBadge diff={detail.difference_qty} /></td>
       <td style={{ fontSize: '0.75rem', color: '#64748b' }}>{detail.reason || '—'}</td>
-      {editable && (
-        <td>
-          <div style={{ display: 'flex', gap: '0.25rem' }}>
-            <button onClick={() => setEditing(true)} style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '0.25rem', cursor: 'pointer', fontWeight: 600 }}>Edit</button>
-            <button onClick={() => onDelete(detail.id)} style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: '#fee2e2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: '0.25rem', cursor: 'pointer', fontWeight: 600 }}>✕</button>
-          </div>
-        </td>
-      )}
     </tr>
   )
 }
