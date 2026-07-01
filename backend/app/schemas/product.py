@@ -13,7 +13,7 @@ class ProductBase(BaseModel):
     barcode: Optional[str] = None
     unit: str = "PCS"
     status: str = "Active"
-    minimum_stock_level: float = 0.0
+    minimum_stock_level: int = 0
 
 
 class ProductCreate(ProductBase):
@@ -30,7 +30,7 @@ class ProductUpdate(BaseModel):
     barcode: Optional[str] = None
     unit: Optional[str] = None
     status: Optional[str] = None
-    minimum_stock_level: Optional[float] = None
+    minimum_stock_level: Optional[int] = None
 
 
 class SupplierInfo(BaseModel):
@@ -54,8 +54,8 @@ class ProductResponse(ProductBase):
     supplier: Optional[SupplierInfo] = None
     category: Optional[CategoryInfo] = None
     created_at: Optional[datetime] = None
-    minimum_stock_level: float = 0.0
-    available_stock: Optional[float] = None  # populated when in_stock_only=true
+    minimum_stock_level: int = 0
+    available_stock: Optional[int] = None  # populated when in_stock_only=true
 
     class Config:
         from_attributes = True

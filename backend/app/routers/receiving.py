@@ -10,6 +10,7 @@ from ..models.product import Product
 from ..models.user import User
 from ..schemas.receiving import ReceivingCreate, ReceivingUpdate, ReceivingResponse
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ def list_receivings(
     has_rejected: Optional[bool] = None,
     page:         int = Query(1, ge=1),
     limit:        int = Query(20, ge=1, le=2000),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("receiving.view")),
     db: Session = Depends(get_db)
 ):
     q = db.query(Receiving).options(
@@ -64,7 +65,7 @@ def list_receivings(
 @router.post("", response_model=ReceivingResponse)
 def create_receiving(
     data: ReceivingCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("receiving.view")),
     db: Session = Depends(get_db)
 ):
     """
@@ -104,6 +105,8 @@ def create_receiving(
                 qty_out=0,
                 transaction_type="RECEIVING",
                 reference_no=f"RCV-{receiving.receiving_id}",
+                inventory_type=receiving.inventory_type,
+                unit_cost_override=receiving.purchase_price,
                 created_by=current_user.username,
             )
         except Exception as exc:
@@ -115,10 +118,12 @@ def create_receiving(
             receiving_id=receiving.receiving_id,
             supplier_id=receiving.supplier_id,
             product_id=receiving.product_id,
+            warehouse_id=receiving.warehouse_id,
             return_date=receiving.received_date,
             quantity=receiving.quantity_rejected,
             reason="Rejected at receiving",
             status="Pending",
+            inventory_type=receiving.inventory_type,
             created_by=current_user.username,
         )
         db.add(sr)
@@ -136,7 +141,7 @@ def create_receiving(
 @router.get("/{receiving_id}", response_model=ReceivingResponse)
 def get_receiving(
     receiving_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("receiving.view")),
     db: Session = Depends(get_db)
 ):
     r = load_receiving(db, receiving_id)
@@ -149,7 +154,7 @@ def get_receiving(
 def update_receiving(
     receiving_id: int,
     data: ReceivingUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("receiving.view")),
     db: Session = Depends(get_db)
 ):
     receiving = db.query(Receiving).filter(
@@ -168,7 +173,7 @@ def update_receiving(
 @router.delete("/{receiving_id}")
 def delete_receiving(
     receiving_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("receiving.view")),
     db: Session = Depends(get_db)
 ):
     receiving = db.query(Receiving).filter(

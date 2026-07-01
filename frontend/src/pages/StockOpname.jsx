@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { stockOpnamesAPI, inventoriesAPI } from '../api'
 import SearchableSelect from '../components/SearchableSelect'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
 import { formatDate, formatNumber } from '../utils/format'
+import { useAuth } from '../context/AuthContext'
 
 const STATUSES = ['Draft', 'Approved', 'Rejected']
 const DIFF_REASONS = ['Damaged', 'Broken', 'Lost', 'Expired', 'Miscount', 'Theft', 'Other']
@@ -43,9 +45,14 @@ function VarianceBadge({ diff }) {
 }
 
 export default function StockOpname() {
-  const [items,       setItems]       = useState([])
-  const [total,       setTotal]       = useState(0)
-  const [page,        setPage]        = useState(1)
+  const { user } = useAuth()
+  const canApprove = user?.role === 'Admin' || user?.role === 'Manager'
+  const [searchParams] = useSearchParams()
+  const [items,        setItems]       = useState([])
+  const [total,        setTotal]       = useState(0)
+  const [page,         setPage]        = useState(1)
+  // Seeded from the notification bell's click-through (e.g. ?status=Draft)
+  const [statusFilter, setStatusFilter] = useState(() => searchParams.get('status') || '')
   const [createModal, setCreateModal] = useState(false)
   const [detailModal, setDetailModal] = useState(false)
   const [selected,    setSelected]    = useState(null)
@@ -63,7 +70,7 @@ export default function StockOpname() {
   })
 
   // Detail add form
-  const emptyAdd = () => ({ product_id: '', good_qty: '', damaged_qty: '0', reason: '', remarks: '' })
+  const emptyAdd = () => ({ product_id: '', good_qty: '', damaged_qty: '0', incomplete_qty: '0', reason: '', remarks: '' })
   const [addProduct,        setAddProduct]        = useState(emptyAdd())
   const [addError,          setAddError]          = useState('')
   const [addLoading,        setAddLoading]        = useState(false)
@@ -87,10 +94,12 @@ export default function StockOpname() {
   }, [addProduct.product_id, selected?.warehouse_id])
 
   const load = useCallback(async () => {
-    const res = await stockOpnamesAPI.list({ page, limit })
+    const params = { page, limit }
+    if (statusFilter) params.status = statusFilter
+    const res = await stockOpnamesAPI.list(params)
     setItems(res.data.items || [])
     setTotal(res.data.total || 0)
-  }, [page])
+  }, [page, statusFilter])
 
   useEffect(() => { load() }, [load])
 
@@ -145,16 +154,19 @@ export default function StockOpname() {
     e.preventDefault()
     setAddError('')
     if (!addProduct.product_id) { setAddError('Select a product'); return }
-    const goodQty    = parseFloat(addProduct.good_qty)
-    const damagedQty = parseFloat(addProduct.damaged_qty) || 0
+    const goodQty       = parseInt(addProduct.good_qty)
+    const damagedQty    = parseInt(addProduct.damaged_qty) || 0
+    const incompleteQty = parseInt(addProduct.incomplete_qty) || 0
     if (isNaN(goodQty) || goodQty < 0) { setAddError('Good quantity must be ≥ 0'); return }
     if (damagedQty < 0)                { setAddError('Damaged quantity must be ≥ 0'); return }
+    if (incompleteQty < 0)             { setAddError('Incomplete quantity must be ≥ 0'); return }
     setAddLoading(true)
     try {
       await stockOpnamesAPI.addDetail(selected.opname_id, {
-        product_id:  parseInt(addProduct.product_id),
-        good_qty:    goodQty,
-        damaged_qty: damagedQty,
+        product_id:     parseInt(addProduct.product_id),
+        good_qty:       goodQty,
+        damaged_qty:    damagedQty,
+        incomplete_qty: incompleteQty,
         reason:      addProduct.reason  || null,
         remarks:     addProduct.remarks || null,
       })
@@ -166,9 +178,9 @@ export default function StockOpname() {
     } finally { setAddLoading(false) }
   }
 
-  const handleUpdateDetail = async (detailId, good_qty, damaged_qty, reason) => {
+  const handleUpdateDetail = async (detailId, good_qty, damaged_qty, incomplete_qty, reason) => {
     try {
-      await stockOpnamesAPI.updateDetail(selected.opname_id, detailId, { good_qty, damaged_qty, reason })
+      await stockOpnamesAPI.updateDetail(selected.opname_id, detailId, { good_qty, damaged_qty, incomplete_qty, reason })
       await refreshSelected()
     } catch (err) {
       alert(err.response?.data?.detail || 'Failed to update.')
@@ -186,7 +198,7 @@ export default function StockOpname() {
   }
 
   const handleApprove = async () => {
-    if (!window.confirm('Approve this Stock Opname?\n\nInventory will be adjusted to match Good Qty counts.\nDamaged items will be recorded separately in Damaged Stock.')) return
+    if (!window.confirm('Approve this Stock Opname?\n\nInventory will be adjusted to match Good Qty counts.\nDamaged and Incomplete items will be recorded separately in Damaged Stock.')) return
     setApproving(true)
     try {
       await stockOpnamesAPI.approve(selected.opname_id)
@@ -215,10 +227,16 @@ export default function StockOpname() {
 
   const opnameSummary = (details) => {
     if (!details || details.length === 0) return null
-    const withVariance = details.filter(d => Math.abs(d.difference_qty) > 0.001)
-    const withDamage   = details.filter(d => d.damaged_qty > 0.001)
-    const totalDamage  = details.reduce((s, d) => s + (d.damaged_qty || 0), 0)
-    return { withVariance: withVariance.length, withDamage: withDamage.length, totalDamage }
+    const withVariance   = details.filter(d => Math.abs(d.difference_qty) > 0.001)
+    const withDamage     = details.filter(d => d.damaged_qty > 0.001)
+    const withIncomplete = details.filter(d => d.incomplete_qty > 0.001)
+    const totalDamage     = details.reduce((s, d) => s + (d.damaged_qty || 0), 0)
+    const totalIncomplete = details.reduce((s, d) => s + (d.incomplete_qty || 0), 0)
+    return {
+      withVariance: withVariance.length,
+      withDamage: withDamage.length, totalDamage,
+      withIncomplete: withIncomplete.length, totalIncomplete,
+    }
   }
 
   const isEditable = selected && selected.status === 'Draft'
@@ -243,6 +261,13 @@ export default function StockOpname() {
 
       {/* ── List ── */}
       <div className="card">
+        <div style={{ marginBottom: '1rem' }}>
+          <select className="input" style={{ width: 'auto' }} value={statusFilter}
+            onChange={e => { setStatusFilter(e.target.value); setPage(1) }}>
+            <option value="">All Statuses</option>
+            {STATUSES.map(s => <option key={s}>{s}</option>)}
+          </select>
+        </div>
         <div className="table-container">
           <table className="table">
             <thead>
@@ -367,7 +392,7 @@ export default function StockOpname() {
 
               {/* Summary stats (Approved only) */}
               {selected.status === 'Approved' && summary && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem' }}>
                   <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '0.5rem', padding: '0.625rem 0.875rem' }}>
                     <div style={{ fontSize: '0.65rem', fontWeight: 700, color: '#16a34a', textTransform: 'uppercase', marginBottom: '0.25rem' }}>Inventory Adjusted</div>
                     <div style={{ fontWeight: 700, fontSize: '1rem', color: '#166534' }}>{summary.withVariance} product(s)</div>
@@ -376,6 +401,10 @@ export default function StockOpname() {
                     <div style={{ fontSize: '0.65rem', fontWeight: 700, color: '#c2410c', textTransform: 'uppercase', marginBottom: '0.25rem' }}>Damage Recorded</div>
                     <div style={{ fontWeight: 700, fontSize: '1rem', color: '#9a3412' }}>{summary.withDamage} product(s) · {formatNumber(summary.totalDamage)} units</div>
                   </div>
+                  <div style={{ background: '#faf5ff', border: '1px solid #e9d5ff', borderRadius: '0.5rem', padding: '0.625rem 0.875rem' }}>
+                    <div style={{ fontSize: '0.65rem', fontWeight: 700, color: '#7e22ce', textTransform: 'uppercase', marginBottom: '0.25rem' }}>Incomplete → Damaged Stock</div>
+                    <div style={{ fontWeight: 700, fontSize: '1rem', color: '#6b21a8' }}>{summary.withIncomplete} product(s) · {formatNumber(summary.totalIncomplete)} units</div>
+                  </div>
                   <div style={{ background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: '0.5rem', padding: '0.625rem 0.875rem' }}>
                     <div style={{ fontSize: '0.65rem', fontWeight: 700, color: '#0369a1', textTransform: 'uppercase', marginBottom: '0.25rem' }}>Approved By</div>
                     <div style={{ fontWeight: 600, fontSize: '0.875rem', color: '#0c4a6e' }}>{selected.approved_by || '—'}</div>
@@ -383,11 +412,11 @@ export default function StockOpname() {
                 </div>
               )}
 
-              {/* Approve / Reject buttons */}
-              {selected.status === 'Draft' && (
+              {/* Approve / Reject buttons — Manager/Admin only */}
+              {selected.status === 'Draft' && canApprove && (
                 <div style={{ display: 'flex', gap: '0.75rem', padding: '0.875rem', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: '0.5rem' }}>
                   <div style={{ flex: 1, fontSize: '0.8125rem', color: '#78350f' }}>
-                    <strong>Ready to approve?</strong> Inventory will update to match <strong>Good Qty</strong> counts. Damaged items go to Damaged Stock records.
+                    <strong>Ready to approve?</strong> Inventory will update to match <strong>Good Qty</strong> counts. Damaged and Incomplete items go to Damaged Stock records.
                   </div>
                   <button
                     className="btn"
@@ -402,10 +431,15 @@ export default function StockOpname() {
                   >{approving ? 'Approving...' : 'Approve & Adjust Inventory'}</button>
                 </div>
               )}
+              {selected.status === 'Draft' && !canApprove && (
+                <div style={{ padding: '0.875rem', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: '0.5rem', fontSize: '0.8125rem', color: '#1e40af' }}>
+                  Awaiting approval by a Manager or Admin.
+                </div>
+              )}
 
               {selected.status === 'Approved' && (
                 <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '0.5rem', padding: '0.75rem 1rem', fontSize: '0.8125rem', color: '#166534', fontWeight: 500 }}>
-                  This opname is approved. Inventory adjusted to Good Qty counts. Damaged items recorded in Damaged Stock.
+                  This opname is approved. Inventory adjusted to Good Qty counts. Damaged and Incomplete items recorded in Damaged Stock.
                 </div>
               )}
 
@@ -428,9 +462,10 @@ export default function StockOpname() {
                   </div>
 
                   {/* Field legend */}
-                  <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '0.75rem', fontSize: '0.72rem', color: '#64748b' }}>
+                  <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '0.75rem', fontSize: '0.72rem', color: '#64748b', flexWrap: 'wrap' }}>
                     <span><strong style={{ color: '#16a34a' }}>Good Qty</strong> — sellable units counted</span>
                     <span><strong style={{ color: '#d97706' }}>Damaged Qty</strong> — damaged units (tracked separately, not double-deducted)</span>
+                    <span><strong style={{ color: '#7e22ce' }}>Incomplete Qty</strong> — physically present but no longer sellable as a complete product (e.g. cannibalized for parts) — routed to Damaged Stock</span>
                     <span><strong style={{ color: '#7c3aed' }}>Variance</strong> = Good − System (adjusts inventory)</span>
                   </div>
 
@@ -478,7 +513,7 @@ export default function StockOpname() {
                     <div style={{ flex: '0 0 100px' }}>
                       <label className="label" style={{ fontSize: '0.72rem', color: '#15803d' }}>Good Qty *</label>
                       <input
-                        className="input" type="number" min="0" step="0.01"
+                        className="input" type="number" min="0" step="1"
                         value={addProduct.good_qty}
                         onChange={e => setAddProduct(p => ({ ...p, good_qty: e.target.value }))}
                         placeholder="e.g. 93"
@@ -488,11 +523,21 @@ export default function StockOpname() {
                     <div style={{ flex: '0 0 100px' }}>
                       <label className="label" style={{ fontSize: '0.72rem', color: '#d97706' }}>Damaged Qty</label>
                       <input
-                        className="input" type="number" min="0" step="0.01"
+                        className="input" type="number" min="0" step="1"
                         value={addProduct.damaged_qty}
                         onChange={e => setAddProduct(p => ({ ...p, damaged_qty: e.target.value }))}
                         placeholder="0"
                         style={{ borderColor: '#fcd34d', textAlign: 'right' }}
+                      />
+                    </div>
+                    <div style={{ flex: '0 0 100px' }}>
+                      <label className="label" style={{ fontSize: '0.72rem', color: '#7e22ce' }}>Incomplete Qty</label>
+                      <input
+                        className="input" type="number" min="0" step="1"
+                        value={addProduct.incomplete_qty}
+                        onChange={e => setAddProduct(p => ({ ...p, incomplete_qty: e.target.value }))}
+                        placeholder="0"
+                        style={{ borderColor: '#d8b4fe', textAlign: 'right' }}
                       />
                     </div>
 
@@ -543,6 +588,7 @@ export default function StockOpname() {
                           <th style={{ textAlign: 'right' }}>System Qty</th>
                           <th style={{ textAlign: 'right', color: '#15803d' }}>Good Qty</th>
                           <th style={{ textAlign: 'right', color: '#d97706' }}>Damaged Qty</th>
+                          <th style={{ textAlign: 'right', color: '#7e22ce' }}>Incomplete Qty</th>
                           <th style={{ textAlign: 'right' }}>Physical Qty</th>
                           <th style={{ textAlign: 'right', color: '#7c3aed' }}>Variance</th>
                           <th>Reason</th>
@@ -587,38 +633,44 @@ export default function StockOpname() {
 // In Draft mode all rows show inputs directly — no Edit toggle needed.
 // A "Save" button appears only when the row has unsaved changes.
 function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
-  const initGoodQty    = String(detail.good_qty    ?? detail.physical_qty ?? 0)
-  const initDamagedQty = String(detail.damaged_qty ?? 0)
-  const initReason     = detail.reason || ''
+  const initGoodQty       = String(detail.good_qty    ?? detail.physical_qty ?? 0)
+  const initDamagedQty    = String(detail.damaged_qty ?? 0)
+  const initIncompleteQty = String(detail.incomplete_qty ?? 0)
+  const initReason        = detail.reason || ''
 
-  const [goodQty,    setGoodQty]    = useState(initGoodQty)
-  const [damagedQty, setDamagedQty] = useState(initDamagedQty)
-  const [reason,     setReason]     = useState(initReason)
-  const [saving,     setSaving]     = useState(false)
+  const [goodQty,       setGoodQty]       = useState(initGoodQty)
+  const [damagedQty,    setDamagedQty]    = useState(initDamagedQty)
+  const [incompleteQty, setIncompleteQty] = useState(initIncompleteQty)
+  const [reason,        setReason]        = useState(initReason)
+  const [saving,        setSaving]        = useState(false)
 
   // Sync local state when detail prop changes (after parent refreshes)
   useEffect(() => {
     setGoodQty(String(detail.good_qty    ?? detail.physical_qty ?? 0))
     setDamagedQty(String(detail.damaged_qty ?? 0))
+    setIncompleteQty(String(detail.incomplete_qty ?? 0))
     setReason(detail.reason || '')
-  }, [detail.good_qty, detail.damaged_qty, detail.reason, detail.physical_qty])
+  }, [detail.good_qty, detail.damaged_qty, detail.incomplete_qty, detail.reason, detail.physical_qty])
 
   const dirty = (
-    goodQty    !== String(detail.good_qty    ?? detail.physical_qty ?? 0) ||
-    damagedQty !== String(detail.damaged_qty ?? 0) ||
-    reason     !== (detail.reason || '')
+    goodQty       !== String(detail.good_qty       ?? detail.physical_qty ?? 0) ||
+    damagedQty    !== String(detail.damaged_qty    ?? 0) ||
+    incompleteQty !== String(detail.incomplete_qty ?? 0) ||
+    reason        !== (detail.reason || '')
   )
 
   const liveVariance = parseFloat(goodQty    || 0) - detail.system_qty
-  const livePhysical = parseFloat(goodQty    || 0) + parseFloat(damagedQty || 0)
+  const livePhysical = parseFloat(goodQty    || 0) + parseFloat(damagedQty || 0) + parseFloat(incompleteQty || 0)
 
   const save = async () => {
-    const gq = parseFloat(goodQty)
-    const dq = parseFloat(damagedQty) || 0
+    const gq = parseInt(goodQty)
+    const dq = parseInt(damagedQty) || 0
+    const iq = parseInt(incompleteQty) || 0
     if (isNaN(gq) || gq < 0) return
     if (dq < 0) return
+    if (iq < 0) return
     setSaving(true)
-    await onUpdate(detail.id, gq, dq, reason || null)
+    await onUpdate(detail.id, gq, dq, iq, reason || null)
     setSaving(false)
   }
 
@@ -640,7 +692,7 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
         </td>
         <td style={{ textAlign: 'right' }}>
           <input
-            type="number" min="0" step="0.01"
+            type="number" min="0" step="1"
             value={goodQty}
             onChange={e => setGoodQty(e.target.value)}
             style={inputStyle('#86efac')}
@@ -648,10 +700,18 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
         </td>
         <td style={{ textAlign: 'right' }}>
           <input
-            type="number" min="0" step="0.01"
+            type="number" min="0" step="1"
             value={damagedQty}
             onChange={e => setDamagedQty(e.target.value)}
             style={inputStyle('#fcd34d')}
+          />
+        </td>
+        <td style={{ textAlign: 'right' }}>
+          <input
+            type="number" min="0" step="1"
+            value={incompleteQty}
+            onChange={e => setIncompleteQty(e.target.value)}
+            style={inputStyle('#d8b4fe')}
           />
         </td>
         <td style={{ textAlign: 'right', color: '#64748b', fontSize: '0.75rem' }}>
@@ -692,9 +752,10 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
   }
 
   // Read-only view (Approved / Rejected)
-  const goodDisplay    = detail.good_qty    ?? detail.physical_qty ?? 0
-  const damagedDisplay = detail.damaged_qty ?? 0
-  const physicalTotal  = goodDisplay + damagedDisplay
+  const goodDisplay       = detail.good_qty    ?? detail.physical_qty ?? 0
+  const damagedDisplay    = detail.damaged_qty ?? 0
+  const incompleteDisplay = detail.incomplete_qty ?? 0
+  const physicalTotal     = goodDisplay + damagedDisplay + incompleteDisplay
 
   return (
     <tr>
@@ -703,6 +764,9 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
       <td style={{ textAlign: 'right', fontWeight: 600, color: '#166534' }}>{formatNumber(goodDisplay)}</td>
       <td style={{ textAlign: 'right', fontWeight: damagedDisplay > 0 ? 600 : 400, color: damagedDisplay > 0 ? '#c2410c' : '#94a3b8' }}>
         {damagedDisplay > 0 ? formatNumber(damagedDisplay) : '—'}
+      </td>
+      <td style={{ textAlign: 'right', fontWeight: incompleteDisplay > 0 ? 600 : 400, color: incompleteDisplay > 0 ? '#7e22ce' : '#94a3b8' }}>
+        {incompleteDisplay > 0 ? formatNumber(incompleteDisplay) : '—'}
       </td>
       <td style={{ textAlign: 'right', color: '#64748b', fontSize: '0.75rem' }}>{formatNumber(physicalTotal)}</td>
       <td style={{ textAlign: 'right' }}><VarianceBadge diff={detail.difference_qty} /></td>

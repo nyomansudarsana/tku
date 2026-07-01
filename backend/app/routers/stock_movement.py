@@ -8,7 +8,9 @@ from ..models.inventory import Inventory
 from ..models.user import User
 from ..schemas.stock_movement import StockMovementCreate, StockMovementUpdate, StockMovementResponse
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
+from ..constants import DEFAULT_INVENTORY_TYPE
 
 router = APIRouter(prefix="/stock-movements", tags=["Stock Movement"])
 
@@ -29,7 +31,7 @@ def list_movements(
     date_to: Optional[date] = None,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=2000),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("stock_movement.view")),
     db: Session = Depends(get_db)
 ):
     q = db.query(StockMovement).options(
@@ -52,38 +54,44 @@ def list_movements(
 
 
 @router.post("", response_model=StockMovementResponse)
-def create_movement(data: StockMovementCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_movement(data: StockMovementCreate, current_user: User = Depends(require_permission("stock_movement.view")), db: Session = Depends(get_db)):
+    """
+    Stock Movement only tracks warehouse-to-warehouse transfers — Receiving,
+    Sales, Returns, and Stock Opname own every other kind of stock change.
+    The schema already guarantees movement_type == "TRANSFER" and both
+    warehouse ids are present and different.
+    """
+    # Check available stock at source warehouse before moving. Stock Movement
+    # only moves the default "TKU Product" bucket (Consignment/Titip Jual
+    # transfers are out of scope here) — check the same bucket the deduction
+    # below actually touches, not a cross-bucket sum.
+    inv = db.query(Inventory).filter(
+        Inventory.product_id == data.product_id,
+        Inventory.warehouse_id == data.from_warehouse_id,
+        Inventory.inventory_type == DEFAULT_INVENTORY_TYPE,
+        Inventory.deleted_at.is_(None),
+    ).first()
+    available = inv.quantity if inv else 0
+    if data.quantity > available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient stock at source warehouse. Available: {available}, Requested: {data.quantity}.",
+        )
+
     movement = StockMovement(**data.dict(), created_by=current_user.username)
     db.add(movement)
     db.flush()
 
     ref = f"MOV-{movement.movement_id}"
-    mtype = data.movement_type
-
-    if mtype == "IN" and data.to_warehouse_id:
-        update_inventory_balance(db, data.product_id, data.to_warehouse_id, data.quantity, 0, "MOVEMENT_IN", ref, current_user.username)
-    elif mtype == "OUT" and data.from_warehouse_id:
-        update_inventory_balance(db, data.product_id, data.from_warehouse_id, 0, data.quantity, "MOVEMENT_OUT", ref, current_user.username)
-    elif mtype == "TRANSFER" and data.from_warehouse_id and data.to_warehouse_id:
-        update_inventory_balance(db, data.product_id, data.from_warehouse_id, 0, data.quantity, "TRANSFER_OUT", ref, current_user.username)
-        update_inventory_balance(db, data.product_id, data.to_warehouse_id, data.quantity, 0, "TRANSFER_IN", ref, current_user.username)
-    elif mtype == "ADJUSTMENT":
-        # Positive adjustment: use to_warehouse_id (qty_in = increase stock)
-        # Negative adjustment: use from_warehouse_id (qty_out = decrease stock)
-        if data.to_warehouse_id and not data.from_warehouse_id:
-            update_inventory_balance(db, data.product_id, data.to_warehouse_id, data.quantity, 0, "ADJUSTMENT_IN", ref, current_user.username)
-        elif data.from_warehouse_id and not data.to_warehouse_id:
-            update_inventory_balance(db, data.product_id, data.from_warehouse_id, 0, data.quantity, "ADJUSTMENT_OUT", ref, current_user.username)
-        elif data.to_warehouse_id and data.from_warehouse_id:
-            # Both set: treat as positive adjustment to destination
-            update_inventory_balance(db, data.product_id, data.to_warehouse_id, data.quantity, 0, "ADJUSTMENT_IN", ref, current_user.username)
+    update_inventory_balance(db, data.product_id, data.from_warehouse_id, 0, data.quantity, "TRANSFER_OUT", ref, created_by=current_user.username)
+    update_inventory_balance(db, data.product_id, data.to_warehouse_id, data.quantity, 0, "TRANSFER_IN", ref, created_by=current_user.username)
 
     db.commit()
     return load_movement(db, movement.movement_id)
 
 
 @router.get("/{movement_id}", response_model=StockMovementResponse)
-def get_movement(movement_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_movement(movement_id: int, current_user: User = Depends(require_permission("stock_movement.view")), db: Session = Depends(get_db)):
     m = load_movement(db, movement_id)
     if not m:
         raise HTTPException(status_code=404, detail="Movement not found")
@@ -91,7 +99,7 @@ def get_movement(movement_id: int, current_user: User = Depends(get_current_user
 
 
 @router.put("/{movement_id}", response_model=StockMovementResponse)
-def update_movement(movement_id: int, data: StockMovementUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_movement(movement_id: int, data: StockMovementUpdate, current_user: User = Depends(require_permission("stock_movement.view")), db: Session = Depends(get_db)):
     movement = db.query(StockMovement).filter(StockMovement.movement_id == movement_id, StockMovement.deleted_at.is_(None)).first()
     if not movement:
         raise HTTPException(status_code=404, detail="Movement not found")
@@ -103,7 +111,7 @@ def update_movement(movement_id: int, data: StockMovementUpdate, current_user: U
 
 
 @router.delete("/{movement_id}")
-def delete_movement(movement_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_movement(movement_id: int, current_user: User = Depends(require_permission("stock_movement.view")), db: Session = Depends(get_db)):
     movement = db.query(StockMovement).filter(StockMovement.movement_id == movement_id, StockMovement.deleted_at.is_(None)).first()
     if not movement:
         raise HTTPException(status_code=404, detail="Movement not found")

@@ -7,6 +7,7 @@ from ..models.store import Store
 from ..models.user import User
 from ..schemas.store import StoreCreate, StoreUpdate, StoreResponse
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 
 router = APIRouter(prefix="/stores", tags=["Stores"])
 
@@ -28,7 +29,7 @@ def list_stores(
 
 
 @router.post("", response_model=StoreResponse)
-def create_store(data: StoreCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_store(data: StoreCreate, current_user: User = Depends(require_permission("master_data.stores")), db: Session = Depends(get_db)):
     store = Store(**data.dict(), created_by=current_user.username)
     db.add(store)
     db.commit()
@@ -45,7 +46,7 @@ def get_store(store_id: int, current_user: User = Depends(get_current_user), db:
 
 
 @router.put("/{store_id}", response_model=StoreResponse)
-def update_store(store_id: int, data: StoreUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_store(store_id: int, data: StoreUpdate, current_user: User = Depends(require_permission("master_data.stores")), db: Session = Depends(get_db)):
     store = db.query(Store).filter(Store.store_id == store_id, Store.deleted_at.is_(None)).first()
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")
@@ -58,7 +59,7 @@ def update_store(store_id: int, data: StoreUpdate, current_user: User = Depends(
 
 
 @router.delete("/{store_id}")
-def delete_store(store_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_store(store_id: int, current_user: User = Depends(require_permission("master_data.stores")), db: Session = Depends(get_db)):
     store = db.query(Store).filter(Store.store_id == store_id, Store.deleted_at.is_(None)).first()
     if not store:
         raise HTTPException(status_code=404, detail="Store not found")

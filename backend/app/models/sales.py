@@ -16,7 +16,7 @@ class Sales(Base, AuditMixin):
     # ── Legacy per-item columns (NULL for new multi-item sales; populated for
     #    old single-item records and maintained by migration) ──────────────────
     product_id    = Column(Integer, ForeignKey("products.product_id"), nullable=True)
-    quantity      = Column(Float, default=0, nullable=True)
+    quantity      = Column(Integer, default=0, nullable=True)
     unit          = Column(String(20), default="PCS", nullable=True)
     sale_price    = Column(Float, default=0, nullable=True)    # VAT-inclusive unit price
     discount_pct  = Column(Float, default=0, nullable=True)    # 0–100

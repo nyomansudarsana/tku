@@ -21,16 +21,17 @@ class SupplierReturnCreate(BaseModel):
     product_id:   int
     warehouse_id: Optional[int] = None
     return_date:  date
-    quantity:     float
+    quantity:     int
     reason:       Optional[str] = None
     status:       str = "Pending"
     remarks:      Optional[str] = None
     receiving_id: Optional[int] = None
+    inventory_type: Optional[str] = None
 
 
 class SupplierReturnUpdate(BaseModel):
     return_date:  Optional[date]  = None
-    quantity:     Optional[float] = None
+    quantity:     Optional[int]   = None
     reason:       Optional[str]   = None
     status:       Optional[str]   = None
     remarks:      Optional[str]   = None
@@ -72,9 +73,10 @@ class SupplierReturnResponse(BaseModel):
     product_id:   int
     warehouse_id: Optional[int]  = None
     return_date:  date
-    quantity:     float
+    quantity:     int
     reason:       Optional[str]  = None
     status:       str
+    inventory_type: Optional[str] = None
     remarks:      Optional[str]  = None
     supplier:     Optional[_SupplierInfo]  = None
     product:      Optional[_ProductInfo]   = None

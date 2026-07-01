@@ -139,7 +139,7 @@ export const bankAccountsAPI = {
 }
 
 export const bulkUploadAPI = {
-  getTemplate: (importType) => api.get(`/bulk-upload/templates/${importType}`, { responseType: 'blob' }),
+  getTemplate: (importType, format = 'csv') => api.get(`/bulk-upload/templates/${importType}`, { params: { format }, responseType: 'blob' }),
   validate: (importType, file) => {
     const form = new FormData()
     form.append('file', file)
@@ -151,6 +151,23 @@ export const bulkUploadAPI = {
     return api.post(`/bulk-upload/import/${importType}`, form, { headers: { 'Content-Type': 'multipart/form-data' } })
   },
   history: (params) => api.get('/bulk-upload/history', { params }),
+}
+
+export const permissionsAPI = {
+  listCatalog:          ()             => api.get('/permissions'),
+  getUserPermissions:   (userId)       => api.get(`/users/${userId}/permissions`),
+  updateUserPermissions:(userId, data) => api.put(`/users/${userId}/permissions`, data),
+}
+
+export const notificationsAPI = {
+  summary: () => api.get('/notifications/summary'),
+}
+
+export const reportsAPI = {
+  inventory:     (params = {}) => api.get('/reports/inventory', { params }),
+  inventoryXlsx: (params = {}) => api.get('/reports/inventory', { params: { ...params, format: 'xlsx' }, responseType: 'blob' }),
+  sales:         (params = {}) => api.get('/reports/sales', { params }),
+  salesXlsx:     (params = {}) => api.get('/reports/sales', { params: { ...params, format: 'xlsx' }, responseType: 'blob' }),
 }
 
 export const dashboardAPI = {

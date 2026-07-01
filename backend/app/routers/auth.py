@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..schemas.auth import LoginRequest, TokenResponse, ChangePasswordRequest
 from ..services.auth import authenticate_user, get_current_user
+from ..services.permissions import get_effective_permissions
 from ..utils.security import create_access_token, get_password_hash, verify_password
 from ..models.user import User
 
@@ -20,7 +21,8 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         user_id=user.user_id,
         username=user.username,
         full_name=user.full_name,
-        role=user.role
+        role=user.role,
+        permissions=get_effective_permissions(user, db),
     )
 
 
@@ -38,12 +40,13 @@ def change_password(
 
 
 @router.get("/me")
-def get_me(current_user: User = Depends(get_current_user)):
+def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return {
         "user_id": current_user.user_id,
         "username": current_user.username,
         "full_name": current_user.full_name,
         "email": current_user.email,
         "role": current_user.role,
-        "status": current_user.status
+        "status": current_user.status,
+        "permissions": get_effective_permissions(current_user, db),
     }

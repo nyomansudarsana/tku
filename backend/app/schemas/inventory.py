@@ -7,7 +7,7 @@ class InventoryBase(BaseModel):
     product_id: int
     warehouse_id: int
     inventory_type: str = "TKU Product"
-    quantity: float = 0
+    quantity: int = 0
     unit: str = "PCS"
     remark: Optional[str] = None
 
@@ -20,7 +20,7 @@ class InventoryUpdate(BaseModel):
     product_id: Optional[int] = None
     warehouse_id: Optional[int] = None
     inventory_type: Optional[str] = None
-    quantity: Optional[float] = None
+    quantity: Optional[int] = None
     unit: Optional[str] = None
     remark: Optional[str] = None
 
@@ -43,6 +43,7 @@ class WarehouseInfo(BaseModel):
 
 class InventoryResponse(InventoryBase):
     inventory_id: int
+    avg_cost: float = 0
     product: Optional[ProductInfo] = None
     warehouse: Optional[WarehouseInfo] = None
     created_at: Optional[datetime] = None

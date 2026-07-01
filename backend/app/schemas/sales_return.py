@@ -2,7 +2,7 @@ from pydantic import BaseModel, field_validator
 from typing import Optional
 from datetime import date, datetime
 
-VALID_CONDITIONS = {"Good", "Defective", "Damaged", "Pending Inspection"}
+VALID_CONDITIONS = {"Good", "Defective", "Damaged", "Incomplete", "Pending Inspection"}
 VALID_STATUSES = {
     "Submitted", "Under Inspection", "Approved",
     "Sent To Supplier", "Completed", "Rejected",
@@ -25,10 +25,11 @@ class SalesReturnBase(BaseModel):
     product_id: int
     warehouse_id: Optional[int] = None
     return_date: date
-    quantity: float
+    quantity: int
     return_reason: Optional[str] = None
     condition: str = "Good"
     status: str = "Submitted"
+    inventory_type: Optional[str] = None
     remarks: Optional[str] = None
 
     @field_validator("condition")
@@ -60,7 +61,7 @@ class SalesReturnCreate(SalesReturnBase):
 class SalesReturnUpdate(BaseModel):
     return_date:      Optional[date]  = None
     warehouse_id:     Optional[int]   = None
-    quantity:         Optional[float] = None
+    quantity:         Optional[int]   = None
     return_reason:    Optional[str]   = None
     condition:        Optional[str]   = None
     status:           Optional[str]   = None

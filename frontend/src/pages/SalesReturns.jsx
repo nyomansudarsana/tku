@@ -6,7 +6,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
 import { formatDate, formatNumber } from '../utils/format'
 
-const CONDITIONS = ['Good', 'Defective', 'Damaged', 'Pending Inspection']
+const CONDITIONS = ['Good', 'Defective', 'Damaged', 'Incomplete', 'Pending Inspection']
 const STATUSES   = ['Submitted', 'Under Inspection', 'Approved', 'Sent To Supplier', 'Completed', 'Rejected']
 const REASONS    = ['Defective product', 'Wrong item', 'Damaged in transit', 'Customer changed mind', 'Warranty claim', 'Other']
 
@@ -33,6 +33,7 @@ const CONDITION_COLORS = {
   'Good':               ['#dcfce7', '#16a34a'],
   'Defective':          ['#fee2e2', '#dc2626'],
   'Damaged':            ['#fef3c7', '#d97706'],
+  'Incomplete':         ['#f3e8ff', '#7e22ce'],
   'Pending Inspection': ['#eff6ff', '#2563eb'],
 }
 
@@ -87,6 +88,7 @@ export default function SalesReturns() {
   const [purchaseDate,  setPurchaseDate]  = useState(today())
   const [salesOptions,  setSalesOptions]  = useState([])
   const [salesLoading,  setSalesLoading]  = useState(false)
+  const [saleSearch,    setSaleSearch]    = useState('')
   const [inspectModal,  setInspectModal]  = useState(null)
   const [inspectNotes,  setInspectNotes]  = useState('')
   const limit = 15
@@ -127,10 +129,23 @@ export default function SalesReturns() {
       _sale_date:    sale.sales_date || '',
       quantity:      String(sale.quantity || ''),
     }))
+    setSaleSearch('')
   }
 
+  // Filter the date's sales by sales number, product name, or customer name so
+  // staff can quickly find the right transaction on a busy sales day.
+  const filteredSalesOptions = salesOptions.filter(s => {
+    if (!saleSearch.trim()) return true
+    const q = saleSearch.trim().toLowerCase()
+    return (
+      String(s.sales_id).includes(q) ||
+      (s.product?.product_name || '').toLowerCase().includes(q) ||
+      (s.customer_name || '').toLowerCase().includes(q)
+    )
+  })
+
   const openCreate = async () => {
-    setEditing(null); setForm(empty); setError('')
+    setEditing(null); setForm(empty); setError(''); setSaleSearch('')
     const d = today(); setPurchaseDate(d)
     await loadSalesForDate(d)
     setModal(true)
@@ -156,6 +171,7 @@ export default function SalesReturns() {
       _sale_date:   '',
     })
     setError('')
+    setSaleSearch('')
     const saleDate = item.sales_date ? item.sales_date.slice(0, 10) : today()
     setPurchaseDate(saleDate)
     await loadSalesForDate(saleDate)
@@ -164,7 +180,7 @@ export default function SalesReturns() {
 
   const handleSave = async (e) => {
     e.preventDefault(); setError('')
-    const qty = parseFloat(form.quantity)
+    const qty = parseInt(form.quantity)
     if (!qty || qty <= 0) { setError('Quantity must be greater than 0'); return }
     if (!form.sales_id)   { setError('Please select a sale'); return }
     setLoading(true)
@@ -387,17 +403,28 @@ export default function SalesReturns() {
               )}
             </div>
 
-            {/* Sale selector */}
+            {/* Sale selector — searchable by sales number, product, or customer */}
             <div style={{ gridColumn: '1 / -1' }}>
               <label className="label">Step 2 — Select Sale *</label>
+              {salesOptions.length > 0 && (
+                <input
+                  className="input"
+                  style={{ marginBottom: '0.375rem' }}
+                  placeholder="Search by sales number, product, or customer..."
+                  value={saleSearch}
+                  onChange={e => setSaleSearch(e.target.value)}
+                />
+              )}
               <select className="input" required value={form.sales_id} disabled={salesOptions.length === 0}
                 onChange={e => {
                   const sale = salesOptions.find(s => String(s.sales_id) === e.target.value)
                   if (sale) handleSaleSelect(sale)
                   else setForm(f => ({ ...f, sales_id: e.target.value }))
                 }}>
-                <option value="">{salesOptions.length === 0 ? 'No sales on this date' : 'Select a sale...'}</option>
-                {salesOptions.map(s => <option key={s.sales_id} value={s.sales_id}>{s._label}</option>)}
+                <option value="">
+                  {salesOptions.length === 0 ? 'No sales on this date' : filteredSalesOptions.length === 0 ? 'No matches' : 'Select a sale...'}
+                </option>
+                {filteredSalesOptions.map(s => <option key={s.sales_id} value={s.sales_id}>{s._label}</option>)}
               </select>
             </div>
 
@@ -406,7 +433,7 @@ export default function SalesReturns() {
               <div style={{ gridColumn: '1 / -1', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '0.5rem', padding: '0.875rem 1rem' }}>
                 <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#166534', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Sale Details (auto-filled)</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.25rem 1rem', fontSize: '0.8125rem' }}>
-                  {[['Product', form._product_name], ['Customer', form._customer], ['Sale Date', formatDate(form._sale_date)], ['Qty Sold', form._max_qty]].map(([l, v]) => v ? (
+                  {[['Sales Number', `#${form.sales_id}`], ['Product', form._product_name], ['Customer', form._customer], ['Sale Date', formatDate(form._sale_date)], ['Qty Sold', form._max_qty]].map(([l, v]) => v ? (
                     <div key={l} style={{ display: 'flex', gap: '0.5rem' }}>
                       <span style={{ color: '#64748b', minWidth: '75px' }}>{l}</span>
                       <span style={{ fontWeight: 600, color: '#166534' }}>{v}</span>
@@ -423,7 +450,7 @@ export default function SalesReturns() {
             </div>
             <div>
               <label className="label">Return Quantity *</label>
-              <input className="input" type="number" required min="0.01" step="0.01"
+              <input className="input" type="number" required min="1" step="1"
                 value={form.quantity} onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
               {form._max_qty && <p style={{ fontSize: '0.7rem', color: '#94a3b8', marginTop: '0.25rem' }}>Original qty sold: {form._max_qty}</p>}
             </div>

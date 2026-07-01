@@ -261,16 +261,11 @@ def stock_summary(
     }
 
 
-@router.get("/low-stock")
-def low_stock_list(
-    warehouse_id: Optional[int] = None,
-    limit: int = Query(50, ge=1, le=200),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
+def compute_low_stock(db: Session, warehouse_id: Optional[int] = None) -> list:
     """
-    Returns products where current stock is at or below their minimum_stock_level.
-    Products with minimum_stock_level = 0 use threshold = 5.
+    Shared by GET /dashboard/low-stock and GET /notifications/summary so both
+    stay in sync on the same threshold logic. Products with
+    minimum_stock_level = 0 use a fallback threshold of 5.
     """
     q = db.query(
         Product.product_id,
@@ -316,7 +311,17 @@ def low_stock_list(
                 "status": status,
             })
     low.sort(key=lambda x: x["current_stock"])
-    return low[:limit]
+    return low
+
+
+@router.get("/low-stock")
+def low_stock_list(
+    warehouse_id: Optional[int] = None,
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    return compute_low_stock(db, warehouse_id)[:limit]
 
 
 @router.get("/sales-by-payment-method")

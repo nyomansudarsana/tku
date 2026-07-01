@@ -7,6 +7,7 @@ from ..models.inventory import Inventory
 from ..models.user import User
 from ..schemas.inventory import InventoryCreate, InventoryUpdate, InventoryResponse
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 
 router = APIRouter(prefix="/inventories", tags=["Inventory"])
 
@@ -25,7 +26,7 @@ def list_inventories(
     inventory_type: Optional[str] = None,
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=2000),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("inventory.view")),
     db: Session = Depends(get_db)
 ):
     q = db.query(Inventory).options(
@@ -43,7 +44,7 @@ def list_inventories(
 
 
 @router.post("", response_model=InventoryResponse)
-def create_inventory(data: InventoryCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_inventory(data: InventoryCreate, current_user: User = Depends(require_permission("inventory.view")), db: Session = Depends(get_db)):
     inv = Inventory(**data.dict(), created_by=current_user.username)
     db.add(inv)
     db.commit()
@@ -52,7 +53,7 @@ def create_inventory(data: InventoryCreate, current_user: User = Depends(get_cur
 
 
 @router.get("/{inventory_id}", response_model=InventoryResponse)
-def get_inventory(inventory_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_inventory(inventory_id: int, current_user: User = Depends(require_permission("inventory.view")), db: Session = Depends(get_db)):
     inv = load_inventory(db, inventory_id)
     if not inv:
         raise HTTPException(status_code=404, detail="Inventory not found")
@@ -60,7 +61,7 @@ def get_inventory(inventory_id: int, current_user: User = Depends(get_current_us
 
 
 @router.put("/{inventory_id}", response_model=InventoryResponse)
-def update_inventory(inventory_id: int, data: InventoryUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_inventory(inventory_id: int, data: InventoryUpdate, current_user: User = Depends(require_permission("inventory.view")), db: Session = Depends(get_db)):
     inv = db.query(Inventory).filter(Inventory.inventory_id == inventory_id, Inventory.deleted_at.is_(None)).first()
     if not inv:
         raise HTTPException(status_code=404, detail="Inventory not found")
@@ -72,7 +73,7 @@ def update_inventory(inventory_id: int, data: InventoryUpdate, current_user: Use
 
 
 @router.delete("/{inventory_id}")
-def delete_inventory(inventory_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_inventory(inventory_id: int, current_user: User = Depends(require_permission("inventory.view")), db: Session = Depends(get_db)):
     inv = db.query(Inventory).filter(Inventory.inventory_id == inventory_id, Inventory.deleted_at.is_(None)).first()
     if not inv:
         raise HTTPException(status_code=404, detail="Inventory not found")

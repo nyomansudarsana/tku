@@ -4,7 +4,7 @@ import SearchableSelect from '../components/SearchableSelect'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
-import { formatDate, formatNumber } from '../utils/format'
+import { formatDate, formatNumber, formatCurrency } from '../utils/format'
 
 const DAMAGE_REASONS = [
   'Broken',
@@ -75,7 +75,7 @@ export default function DamagedStock() {
   const handleSave = async (e) => {
     e.preventDefault()
     setError('')
-    const qty = parseFloat(form.quantity)
+    const qty = parseInt(form.quantity)
     if (!qty || qty <= 0) { setError('Quantity must be greater than 0'); return }
     if (!form.product_id) { setError('Please select a product'); return }
     setLoading(true)
@@ -156,6 +156,7 @@ export default function DamagedStock() {
                 <th>Product</th>
                 <th>Warehouse</th>
                 <th>Qty</th>
+                <th>Loss Amount</th>
                 <th>Reason</th>
                 <th>Source</th>
                 <th>Reference</th>
@@ -165,7 +166,7 @@ export default function DamagedStock() {
             <tbody>
               {items.length === 0 ? (
                 <tr>
-                  <td colSpan={9} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>
+                  <td colSpan={10} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>
                     No damaged stock records
                   </td>
                 </tr>
@@ -178,6 +179,7 @@ export default function DamagedStock() {
                     <td style={{ fontWeight: 500 }}>{item.product?.product_name || `#${item.product_id}`}</td>
                     <td style={{ fontSize: '0.8rem', color: '#475569' }}>{item.warehouse?.warehouse_name || '—'}</td>
                     <td style={{ fontWeight: 700, color: '#dc2626' }}>{formatNumber(item.quantity)}</td>
+                    <td style={{ fontWeight: 600, color: '#dc2626' }}>{item.loss_amount != null ? formatCurrency(item.loss_amount) : '—'}</td>
                     <td style={{ fontSize: '0.8rem' }}>{item.damage_reason}</td>
                     <td>
                       <span style={{ padding: '0.2rem 0.6rem', borderRadius: '999px', fontSize: '0.72rem', fontWeight: 600, background: bg, color }}>
@@ -247,7 +249,7 @@ export default function DamagedStock() {
 
             <div>
               <label className="label">Quantity *</label>
-              <input className="input" type="number" required min="0.01" step="0.01"
+              <input className="input" type="number" required min="1" step="1"
                 value={form.quantity}
                 onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
             </div>

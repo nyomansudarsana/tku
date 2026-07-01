@@ -7,6 +7,7 @@ from ..models.warehouse import Warehouse
 from ..models.user import User
 from ..schemas.warehouse import WarehouseCreate, WarehouseUpdate, WarehouseResponse
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 
 router = APIRouter(prefix="/warehouses", tags=["Warehouses"])
 
@@ -28,7 +29,7 @@ def list_warehouses(
 
 
 @router.post("", response_model=WarehouseResponse)
-def create_warehouse(data: WarehouseCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_warehouse(data: WarehouseCreate, current_user: User = Depends(require_permission("master_data.warehouses")), db: Session = Depends(get_db)):
     wh = Warehouse(**data.dict(), created_by=current_user.username)
     db.add(wh)
     db.commit()
@@ -45,7 +46,7 @@ def get_warehouse(warehouse_id: int, current_user: User = Depends(get_current_us
 
 
 @router.put("/{warehouse_id}", response_model=WarehouseResponse)
-def update_warehouse(warehouse_id: int, data: WarehouseUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_warehouse(warehouse_id: int, data: WarehouseUpdate, current_user: User = Depends(require_permission("master_data.warehouses")), db: Session = Depends(get_db)):
     wh = db.query(Warehouse).filter(Warehouse.warehouse_id == warehouse_id, Warehouse.deleted_at.is_(None)).first()
     if not wh:
         raise HTTPException(status_code=404, detail="Warehouse not found")
@@ -58,7 +59,7 @@ def update_warehouse(warehouse_id: int, data: WarehouseUpdate, current_user: Use
 
 
 @router.delete("/{warehouse_id}")
-def delete_warehouse(warehouse_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_warehouse(warehouse_id: int, current_user: User = Depends(require_permission("master_data.warehouses")), db: Session = Depends(get_db)):
     wh = db.query(Warehouse).filter(Warehouse.warehouse_id == warehouse_id, Warehouse.deleted_at.is_(None)).first()
     if not wh:
         raise HTTPException(status_code=404, detail="Warehouse not found")

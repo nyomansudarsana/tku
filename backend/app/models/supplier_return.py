@@ -13,11 +13,14 @@ class SupplierReturn(Base, AuditMixin):
     product_id   = Column(Integer, ForeignKey("products.product_id"), nullable=False)
     warehouse_id = Column(Integer, ForeignKey("warehouses.warehouse_id"), nullable=True)
     return_date  = Column(Date, nullable=False, index=True)
-    quantity     = Column(Float, nullable=False, default=0)
+    quantity     = Column(Integer, nullable=False, default=0)
     reason       = Column(String(200), nullable=True)
     # Pending / Ready To Send / Sent To Supplier / Completed / Cancelled
     status           = Column(String(30), nullable=False, default="Pending")
     current_location = Column(String(50), nullable=True)
+    # Ownership bucket the returned units belong to (see ../constants.py) —
+    # inherited from the source Receiving, or picked explicitly for manual returns.
+    inventory_type   = Column(String(30), nullable=True)
     remarks      = Column(Text, nullable=True)
 
     supplier  = relationship("Supplier",  foreign_keys=[supplier_id])

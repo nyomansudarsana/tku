@@ -12,8 +12,12 @@ class SalesReturn(Base, AuditMixin):
     product_id   = Column(Integer, ForeignKey("products.product_id"), nullable=False)
     warehouse_id = Column(Integer, ForeignKey("warehouses.warehouse_id"), nullable=True)
     return_date  = Column(Date, nullable=False, index=True)
-    quantity     = Column(Float, nullable=False, default=0)
+    quantity     = Column(Integer, nullable=False, default=0)
     return_reason = Column(String(200), nullable=True)
+    # Ownership bucket the returned unit was originally sold from (see
+    # ../constants.py) — inherited from the matching SalesDetail at creation,
+    # so "Good" returns restore to the correct bucket, not always TKU Product.
+    inventory_type = Column(String(30), nullable=True)
     # Good / Defective / Damaged / Pending Inspection
     condition    = Column(String(50), nullable=False, default="Good")
     # Submitted / Under Inspection / Approved / Sent To Supplier / Completed / Rejected

@@ -102,6 +102,16 @@ def run_migrations(db_path: str) -> None:
         # ── Stock Opname: good/damaged split + audit fields ──────────────────
         _migrate_stock_opname_v2(c)
 
+        # ── TKU enhancement Phase 1: costing, ownership buckets, incomplete,
+        #    integer quantities ───────────────────────────────────────────────
+        _migrate_costing_v1(c)
+        _migrate_inventory_buckets_v1(c)
+        _migrate_stock_opname_incomplete_v1(c)
+        _migrate_quantity_integer_v1(c)
+
+        # ── Reports module: filter indexes ────────────────────────────────────
+        _migrate_report_indexes_v1(c)
+
         conn.commit()
         logger.info("Database migrations completed successfully")
     except Exception as exc:
@@ -606,3 +616,285 @@ def _migrate_stock_opname_v2(c) -> None:
             SET approved_by = modified_by
             WHERE status = 'Approved' AND approved_by IS NULL AND modified_by IS NOT NULL
         """)
+
+
+# ── TKU enhancement Phase 1 ────────────────────────────────────────────────────
+
+def _migrate_costing_v1(c) -> None:
+    """
+    Purchase price → weighted-average costing.
+
+    Adds purchase_price to receivings, avg_cost to inventories, and cost-
+    snapshot columns to inventory_ledger/sales_details/damaged_stocks. All new
+    columns are nullable/constant-defaulted so this is a plain ADD COLUMN pass
+    — no table rebuild needed. Historical rows get purchase_price/avg_cost = 0
+    (unknown pre-feature cost); best-effort backfilled below from
+    supplier_products.cost_price where available.
+    """
+    if _table_exists(c, "receivings") and not _column_exists(c, "receivings", "purchase_price"):
+        c.execute("ALTER TABLE receivings ADD COLUMN purchase_price REAL DEFAULT 0")
+        logger.info("receivings: added column purchase_price")
+
+    if _table_exists(c, "inventories") and not _column_exists(c, "inventories", "avg_cost"):
+        c.execute("ALTER TABLE inventories ADD COLUMN avg_cost REAL DEFAULT 0")
+        logger.info("inventories: added column avg_cost")
+
+    if _table_exists(c, "inventory_ledger"):
+        for col, defn in [
+            ("unit_cost",   "REAL DEFAULT NULL"),
+            ("total_value", "REAL DEFAULT NULL"),
+        ]:
+            if not _column_exists(c, "inventory_ledger", col):
+                c.execute(f"ALTER TABLE inventory_ledger ADD COLUMN {col} {defn}")
+                logger.info("inventory_ledger: added column %s", col)
+
+    if _table_exists(c, "sales_details") and not _column_exists(c, "sales_details", "unit_cost"):
+        c.execute("ALTER TABLE sales_details ADD COLUMN unit_cost REAL DEFAULT NULL")
+        logger.info("sales_details: added column unit_cost")
+
+    if _table_exists(c, "damaged_stocks"):
+        for col, defn in [
+            ("unit_cost",   "REAL DEFAULT NULL"),
+            ("loss_amount", "REAL DEFAULT NULL"),
+        ]:
+            if not _column_exists(c, "damaged_stocks", col):
+                c.execute(f"ALTER TABLE damaged_stocks ADD COLUMN {col} {defn}")
+                logger.info("damaged_stocks: added column %s", col)
+
+    # Best-effort backfill: seed avg_cost from the supplier's quoted cost_price
+    # for inventory rows that predate purchase_price tracking (their true
+    # historical cost is unknown). Rows with no supplier_products link are left
+    # at 0 for manual correction via an opening adjustment receiving.
+    if _table_exists(c, "inventories") and _table_exists(c, "supplier_products"):
+        c.execute("""
+            UPDATE inventories
+            SET avg_cost = (
+                SELECT sp.cost_price FROM supplier_products sp
+                WHERE sp.product_id = inventories.product_id
+                ORDER BY sp.id LIMIT 1
+            )
+            WHERE (avg_cost IS NULL OR avg_cost = 0)
+              AND quantity > 0
+              AND EXISTS (
+                  SELECT 1 FROM supplier_products sp WHERE sp.product_id = inventories.product_id
+              )
+        """)
+        if c.rowcount:
+            logger.info(
+                "inventories: backfilled avg_cost from supplier_products.cost_price for %d rows",
+                c.rowcount,
+            )
+
+
+def _migrate_inventory_buckets_v1(c) -> None:
+    """
+    Ownership-bucket (inventory_type) relocation to Receiving.
+
+    Inventory becomes keyed by (product_id, warehouse_id, inventory_type)
+    instead of (product_id, warehouse_id) so the same product can carry
+    separate TKU Product / Consignment / Titip Jual balances in one warehouse.
+    No UniqueConstraint existed on inventories before this migration — the
+    (product, warehouse) "key" was purely an application-level convention — so
+    existing duplicates are defensively merged before creating the new
+    constraint. A partial unique index (WHERE deleted_at IS NULL) is used
+    instead of a full table rebuild since SQLite supports CREATE UNIQUE INDEX
+    IF NOT EXISTS directly, and a table-level UNIQUE constraint would
+    incorrectly also apply to soft-deleted rows.
+    """
+    if _table_exists(c, "inventories"):
+        c.execute("""
+            SELECT product_id, warehouse_id, inventory_type, MIN(inventory_id) AS keep_id,
+                   SUM(quantity) AS total_qty, COUNT(*) AS cnt
+            FROM inventories
+            WHERE deleted_at IS NULL
+            GROUP BY product_id, warehouse_id, inventory_type
+            HAVING COUNT(*) > 1
+        """)
+        dup_groups = c.fetchall()
+        for product_id, warehouse_id, inv_type, keep_id, total_qty, cnt in dup_groups:
+            c.execute(
+                "UPDATE inventories SET quantity = ? WHERE inventory_id = ?",
+                (total_qty, keep_id),
+            )
+            c.execute("""
+                UPDATE inventories SET deleted_at = datetime('now'), deleted_by = 'migration'
+                WHERE product_id = ? AND warehouse_id = ? AND inventory_type = ?
+                  AND inventory_id != ? AND deleted_at IS NULL
+            """, (product_id, warehouse_id, inv_type, keep_id))
+            logger.warning(
+                "inventories: merged %d duplicate row(s) for product=%s warehouse=%s type=%s "
+                "into inventory_id=%s (summed qty=%s) — review for correctness",
+                cnt - 1, product_id, warehouse_id, inv_type, keep_id, total_qty,
+            )
+
+        c.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_inventories_bucket
+            ON inventories(product_id, warehouse_id, inventory_type)
+            WHERE deleted_at IS NULL
+        """)
+
+    if _table_exists(c, "receivings"):
+        for col, defn in [
+            ("inventory_type", "VARCHAR(30) DEFAULT 'TKU Product'"),
+        ]:
+            if not _column_exists(c, "receivings", col):
+                c.execute(f"ALTER TABLE receivings ADD COLUMN {col} {defn}")
+                logger.info("receivings: added column %s", col)
+
+    for table in ("inventory_ledger", "sales_details", "damaged_stocks", "supplier_returns", "sales_returns"):
+        if _table_exists(c, table) and not _column_exists(c, table, "inventory_type"):
+            c.execute(f"ALTER TABLE {table} ADD COLUMN inventory_type VARCHAR(30) DEFAULT NULL")
+            logger.info("%s: added column inventory_type", table)
+
+    if _table_exists(c, "stock_opname_details") and not _column_exists(c, "stock_opname_details", "inventory_type"):
+        c.execute("ALTER TABLE stock_opname_details ADD COLUMN inventory_type VARCHAR(30) DEFAULT NULL")
+        logger.info("stock_opname_details: added column inventory_type")
+
+    # ── Backfill inventory_type on existing rows from the matching Inventory
+    #    bucket, falling back to 'TKU Product' where no match exists (e.g.
+    #    pure historical records with no corresponding Inventory row). ────────
+    if _table_exists(c, "inventories"):
+        if _table_exists(c, "damaged_stocks"):
+            c.execute("""
+                UPDATE damaged_stocks
+                SET inventory_type = (
+                    SELECT i.inventory_type FROM inventories i
+                    WHERE i.product_id = damaged_stocks.product_id
+                      AND i.warehouse_id = damaged_stocks.warehouse_id
+                      AND i.deleted_at IS NULL
+                    LIMIT 1
+                )
+                WHERE inventory_type IS NULL
+            """)
+        if _table_exists(c, "supplier_returns"):
+            c.execute("""
+                UPDATE supplier_returns
+                SET inventory_type = (
+                    SELECT i.inventory_type FROM inventories i
+                    WHERE i.product_id = supplier_returns.product_id
+                      AND i.warehouse_id = supplier_returns.warehouse_id
+                      AND i.deleted_at IS NULL
+                    LIMIT 1
+                )
+                WHERE inventory_type IS NULL
+            """)
+        if _table_exists(c, "sales_returns"):
+            c.execute("""
+                UPDATE sales_returns
+                SET inventory_type = (
+                    SELECT i.inventory_type FROM inventories i
+                    WHERE i.product_id = sales_returns.product_id
+                      AND i.warehouse_id = sales_returns.warehouse_id
+                      AND i.deleted_at IS NULL
+                    LIMIT 1
+                )
+                WHERE inventory_type IS NULL
+            """)
+        if _table_exists(c, "sales_details") and _table_exists(c, "sales"):
+            c.execute("""
+                UPDATE sales_details
+                SET inventory_type = (
+                    SELECT i.inventory_type FROM inventories i
+                    JOIN sales s ON s.sales_id = sales_details.sales_id
+                    WHERE i.product_id = sales_details.product_id
+                      AND i.warehouse_id = s.warehouse_id
+                      AND i.deleted_at IS NULL
+                    LIMIT 1
+                )
+                WHERE inventory_type IS NULL
+            """)
+        if _table_exists(c, "stock_opname_details") and _table_exists(c, "stock_opnames"):
+            c.execute("""
+                UPDATE stock_opname_details
+                SET inventory_type = (
+                    SELECT i.inventory_type FROM inventories i
+                    JOIN stock_opnames so ON so.opname_id = stock_opname_details.opname_id
+                    WHERE i.product_id = stock_opname_details.product_id
+                      AND i.warehouse_id = so.warehouse_id
+                      AND i.deleted_at IS NULL
+                    LIMIT 1
+                )
+                WHERE inventory_type IS NULL
+            """)
+
+    # Anything still unmatched (no corresponding Inventory row found) falls
+    # back to the default bucket rather than staying NULL.
+    for table in ("damaged_stocks", "supplier_returns", "sales_returns", "sales_details", "stock_opname_details"):
+        if _table_exists(c, table):
+            c.execute(f"UPDATE {table} SET inventory_type = 'TKU Product' WHERE inventory_type IS NULL")
+
+
+def _migrate_stock_opname_incomplete_v1(c) -> None:
+    """
+    Add the 'Incomplete' stock condition — units physically present but no
+    longer sellable as a complete product (e.g. cannibalized for spare parts).
+    Routed to Damaged Stock on approval just like damaged_qty.
+    """
+    if not _table_exists(c, "stock_opname_details"):
+        return
+    if not _column_exists(c, "stock_opname_details", "incomplete_qty"):
+        c.execute(
+            "ALTER TABLE stock_opname_details ADD COLUMN incomplete_qty INTEGER NOT NULL DEFAULT 0"
+        )
+        logger.info("stock_opname_details: added column incomplete_qty")
+
+
+def _migrate_quantity_integer_v1(c) -> None:
+    """
+    Round any fractional quantity values to whole units. SQLite has no strict
+    column-type enforcement (ALTER COLUMN TYPE isn't supported), so switching
+    the SQLAlchemy models from Float to Integer doesn't itself change stored
+    values — this pass defensively normalizes any legacy fractional data.
+    Existing seed/production data is already integer-valued, so this is
+    expected to be a no-op; it exists as a safety net, not a corrective fix.
+    """
+    targets = [
+        ("receivings",           ["quantity_received", "quantity_accepted", "quantity_rejected"]),
+        ("inventories",          ["quantity"]),
+        ("sales",                ["quantity"]),
+        ("sales_details",        ["quantity"]),
+        ("sales_returns",        ["quantity"]),
+        ("supplier_returns",     ["quantity"]),
+        ("damaged_stocks",       ["quantity"]),
+        ("stock_movements",      ["quantity"]),
+        ("stock_opname_details", ["system_qty", "good_qty", "damaged_qty", "physical_qty", "difference_qty"]),
+        ("products",             ["minimum_stock_level"]),
+    ]
+    for table, columns in targets:
+        if not _table_exists(c, table):
+            continue
+        for col in columns:
+            if not _column_exists(c, table, col):
+                continue
+            c.execute(f"""
+                UPDATE {table}
+                SET {col} = CAST(ROUND({col}) AS INTEGER)
+                WHERE {col} IS NOT NULL AND {col} != CAST(ROUND({col}) AS INTEGER)
+            """)
+            if c.rowcount:
+                logger.info(
+                    "%s: rounded %d fractional value(s) in column %s to whole units",
+                    table, c.rowcount, col,
+                )
+
+
+def _migrate_report_indexes_v1(c) -> None:
+    """
+    Indexes backing the Inventory Report's Category/Warehouse/Inventory Type
+    filters (and the equivalent Damaged Stock join) — none of these FK/filter
+    columns had an explicit index before. CREATE INDEX IF NOT EXISTS is
+    idempotent and needs no table rebuild.
+    """
+    index_defs = [
+        ("ix_products_category_id",        "products",       "category_id"),
+        ("ix_inventories_product_id",      "inventories",    "product_id"),
+        ("ix_inventories_warehouse_id",    "inventories",    "warehouse_id"),
+        ("ix_inventories_inventory_type",  "inventories",    "inventory_type"),
+        ("ix_damaged_stocks_product_id",   "damaged_stocks", "product_id"),
+        ("ix_damaged_stocks_warehouse_id", "damaged_stocks", "warehouse_id"),
+        ("ix_damaged_stocks_inventory_type", "damaged_stocks", "inventory_type"),
+    ]
+    for index_name, table, column in index_defs:
+        if not _table_exists(c, table) or not _column_exists(c, table, column):
+            continue
+        c.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table}({column})")

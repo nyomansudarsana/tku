@@ -4,7 +4,7 @@ import AsyncDropdown from '../components/AsyncDropdown'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
-import { formatNumber, stockBadge } from '../utils/format'
+import { formatNumber, formatCurrency, stockBadge } from '../utils/format'
 import { exportCsv } from '../utils/exportCsv'
 
 const UNITS = ['PCS', 'Pack', 'Unit', 'Box', 'Set', 'Kg', 'Liter']
@@ -55,7 +55,7 @@ export default function Inventory() {
     setSaveError('')
     setLoading(true)
     try {
-      const data = { ...form, product_id: parseInt(form.product_id), warehouse_id: parseInt(form.warehouse_id), quantity: parseFloat(form.quantity) }
+      const data = { ...form, product_id: parseInt(form.product_id), warehouse_id: parseInt(form.warehouse_id), quantity: parseInt(form.quantity) }
       if (editing) await inventoriesAPI.update(editing.inventory_id, data)
       else await inventoriesAPI.create(data)
       setModal(false)
@@ -74,8 +74,8 @@ export default function Inventory() {
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button className="btn btn-secondary" onClick={() => {
-            const rows = items.map(inv => ({ product: inv.product?.product_name || '', warehouse: inv.warehouse?.warehouse_name || '', type: inv.inventory_type, qty: inv.quantity, unit: inv.unit, remark: inv.remark || '' }))
-            exportCsv(rows, ['product','warehouse','type','qty','unit','remark'], { product:'Product', warehouse:'Warehouse', type:'Type', qty:'Quantity', unit:'Unit', remark:'Remark' }, 'inventory-export')
+            const rows = items.map(inv => ({ product: inv.product?.product_name || '', warehouse: inv.warehouse?.warehouse_name || '', type: inv.inventory_type, qty: inv.quantity, avg_cost: inv.avg_cost, unit: inv.unit, remark: inv.remark || '' }))
+            exportCsv(rows, ['product','warehouse','type','qty','avg_cost','unit','remark'], { product:'Product', warehouse:'Warehouse', type:'Type', qty:'Quantity', avg_cost:'Avg Cost', unit:'Unit', remark:'Remark' }, 'inventory-export')
           }}>Export CSV</button>
           <button className="btn btn-primary" onClick={openCreate}>+ Add Inventory</button>
         </div>
@@ -104,11 +104,11 @@ export default function Inventory() {
         <div className="table-container">
           <table className="table">
             <thead>
-              <tr><th>#</th><th>Product</th><th>Warehouse</th><th>Type</th><th>Quantity</th><th>Unit</th><th>Status</th><th>Remark</th><th>Actions</th></tr>
+              <tr><th>#</th><th>Product</th><th>Warehouse</th><th>Type</th><th>Quantity</th><th>Avg Cost</th><th>Unit</th><th>Status</th><th>Remark</th><th>Actions</th></tr>
             </thead>
             <tbody>
               {items.length === 0
-                ? <tr><td colSpan={9} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>No inventory records</td></tr>
+                ? <tr><td colSpan={10} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>No inventory records</td></tr>
                 : items.map((item, i) => (
                   <tr key={item.inventory_id}>
                     <td style={{ color: '#94a3b8' }}>{(page - 1) * limit + i + 1}</td>
@@ -120,6 +120,7 @@ export default function Inventory() {
                       </span>
                     </td>
                     <td style={{ fontWeight: 700, fontSize: '1rem' }}>{formatNumber(item.quantity)}</td>
+                    <td>{formatCurrency(item.avg_cost)}</td>
                     <td>{item.unit}</td>
                     <td>
                       <span className={`badge ${stockBadge(item.quantity)}`}>
@@ -182,7 +183,7 @@ export default function Inventory() {
             </div>
             <div>
               <label className="label">Quantity *</label>
-              <input className="input" type="number" required min="0" step="0.01" value={form.quantity}
+              <input className="input" type="number" required min="0" step="1" value={form.quantity}
                 onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
             </div>
             <div>

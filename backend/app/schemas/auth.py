@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict
 
 
 class LoginRequest(BaseModel):
@@ -14,6 +14,7 @@ class TokenResponse(BaseModel):
     username: str
     full_name: str
     role: str
+    permissions: Dict[str, bool] = {}
 
 
 class ChangePasswordRequest(BaseModel):

@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .config import settings
-from .database import engine, Base
+from .database import engine, Base, SessionLocal
 from .migrate import run_migrations
 from .routers import (
     auth, users, suppliers, categories, products,
@@ -16,6 +16,10 @@ from .routers import (
 )
 from .routers import sales_returns, bulk_upload
 from .routers import supplier_returns, stock_opnames, damaged_stocks
+from .routers import permissions as permissions_router
+from .routers import notifications
+from .routers import reports
+from .services.permissions import seed_permission_catalog
 # Ensure SalesDetail model is registered with SQLAlchemy before create_all()
 from .models import sales_detail as _sales_detail_model  # noqa: F401
 
@@ -38,6 +42,15 @@ except Exception as exc:
     logger.error("Startup migration error: %s", exc)
 
 Base.metadata.create_all(bind=engine)
+
+# Seed the fixed permission catalog after tables exist — safe/idempotent on
+# every startup, and avoids the chicken-and-egg gap of migrate.py running
+# before create_all() creates the permissions table for the first time.
+try:
+    _seed_db = SessionLocal()
+    seed_permission_catalog(_seed_db)
+finally:
+    _seed_db.close()
 
 # ── FastAPI application ─────────────────────────────────────────────────────
 app = FastAPI(
@@ -80,6 +93,9 @@ app.include_router(supplier_returns.router,  prefix="/api/v1")
 app.include_router(stock_opnames.router,     prefix="/api/v1")
 app.include_router(damaged_stocks.router,    prefix="/api/v1")
 app.include_router(bulk_upload.router,       prefix="/api/v1")
+app.include_router(permissions_router.router, prefix="/api/v1")
+app.include_router(notifications.router,     prefix="/api/v1")
+app.include_router(reports.router,           prefix="/api/v1")
 
 
 @app.get("/")

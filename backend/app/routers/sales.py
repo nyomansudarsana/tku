@@ -13,7 +13,9 @@ from ..models.bank_account import BankAccount
 from ..models.user import User
 from ..schemas.sales import SalesCreate, SalesUpdate, SalesResponse, SalesDetailResponse
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
+from ..constants import DEFAULT_INVENTORY_TYPE
 
 logger = logging.getLogger(__name__)
 
@@ -65,27 +67,64 @@ def _compute_header_totals(details: list) -> dict:
     }
 
 
-# ── Stock availability check ──────────────────────────────────────────────────
+# ── Stock availability check + ownership-bucket resolution ────────────────────
 
-def _check_stock(
+def _resolve_sale_bucket(
     db: Session,
     product_id: int,
     warehouse_id: int,
     requested_qty: float,
+    requested_type: str = None,
     product_name: str = "",
-) -> None:
+) -> str:
     """
-    Raise HTTP 400 if available stock < requested_qty.
-    Call BEFORE any DB flush so the check is against committed inventory.
+    Determine which Inventory ownership bucket (inventory_type) a sale line
+    should be deducted from, and raise HTTP 400 if the resolved bucket doesn't
+    have enough stock.
+
+    - If requested_type is given, validate stock against that specific bucket.
+    - Otherwise: if exactly one bucket for this product+warehouse has stock,
+      auto-select it (frictionless common case). If more than one bucket has
+      stock, the caller must specify inventory_type — we reject with a list of
+      the available buckets/quantities so the frontend can prompt a picker.
+    - If no bucket has stock, behave like the old check (available: 0).
+
+    Returns the resolved inventory_type.
     """
-    inv = db.query(Inventory).filter(
+    label = product_name or f"product #{product_id}"
+    buckets = db.query(Inventory).filter(
         Inventory.product_id == product_id,
         Inventory.warehouse_id == warehouse_id,
         Inventory.deleted_at.is_(None),
-    ).first()
-    available = inv.quantity if inv else 0.0
+        Inventory.quantity > 0,
+    ).all()
+
+    if requested_type:
+        match = next((b for b in buckets if b.inventory_type == requested_type), None)
+        available = match.quantity if match else 0
+        if requested_qty > available:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Insufficient stock for '{label}' ({requested_type}). "
+                    f"Available: {available} pcs, Requested: {requested_qty} pcs."
+                ),
+            )
+        return requested_type
+
+    if len(buckets) > 1:
+        options = ", ".join(f"{b.inventory_type} ({b.quantity})" for b in buckets)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{label}' has stock in more than one inventory type at this warehouse: "
+                f"{options}. Please specify which one to sell from."
+            ),
+        )
+
+    available = buckets[0].quantity if buckets else 0
+    resolved_type = buckets[0].inventory_type if buckets else DEFAULT_INVENTORY_TYPE
     if requested_qty > available:
-        label = product_name or f"product #{product_id}"
         raise HTTPException(
             status_code=400,
             detail=(
@@ -94,6 +133,7 @@ def _check_stock(
                 "Please reduce quantity or replenish stock before completing this sale."
             ),
         )
+    return resolved_type
 
 
 # ── Eager-load helper ─────────────────────────────────────────────────────────
@@ -126,7 +166,7 @@ def list_sales(
     date_to:          Optional[date] = None,
     page:             int = Query(1, ge=1),
     limit:            int = Query(20, ge=1, le=2000),
-    current_user:     User    = Depends(get_current_user),
+    current_user:     User    = Depends(require_permission("sales.view")),
     db:               Session = Depends(get_db),
 ):
     q = (
@@ -177,7 +217,7 @@ def list_sales(
 @router.post("", response_model=SalesResponse)
 def create_sale(
     data: SalesCreate,
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("sales.view")),
     db:           Session = Depends(get_db),
 ):
     # Validate bank account
@@ -190,7 +230,8 @@ def create_sale(
         if not ba:
             raise HTTPException(status_code=400, detail="Bank account not found or inactive")
 
-    # ── Pre-flight stock availability check ──────────────────────────────────
+    # ── Pre-flight stock availability check + bucket resolution ──────────────
+    resolved_types = {}   # product_id -> resolved inventory_type for this sale
     if data.warehouse_id:
         for item in data.details:
             product = db.query(Product).filter(
@@ -207,11 +248,12 @@ def create_sale(
                     status_code=400,
                     detail=f"Product '{product.product_name}' is not active and cannot be sold",
                 )
-            _check_stock(
+            resolved_types[item.product_id] = _resolve_sale_bucket(
                 db,
                 product_id=item.product_id,
                 warehouse_id=data.warehouse_id,
                 requested_qty=item.quantity,
+                requested_type=item.inventory_type,
                 product_name=product.product_name,
             )
 
@@ -252,6 +294,7 @@ def create_sale(
             discount_amount = computed["discount_amount"],
             vat_amount      = computed["vat_amount"],
             line_total      = computed["line_total"],
+            inventory_type  = resolved_types.get(item.product_id),
         )
         db.add(detail)
         detail_objs.append(detail)
@@ -263,11 +306,13 @@ def create_sale(
     for k, v in totals.items():
         setattr(sale, k, v)
 
-    # ── Deduct inventory for each line (FATAL if deduction fails) ────────────
+    # ── Deduct inventory for each line (FATAL if deduction fails) ─────────────
+    # Also snapshot the bucket's avg_cost onto the detail for margin reporting —
+    # taken AFTER deduction so it reflects the cost in effect at sale time.
     if sale.warehouse_id:
         for detail in detail_objs:
             try:
-                update_inventory_balance(
+                inv = update_inventory_balance(
                     db,
                     product_id       = detail.product_id,
                     warehouse_id     = sale.warehouse_id,
@@ -275,8 +320,10 @@ def create_sale(
                     qty_out          = detail.quantity,
                     transaction_type = "SALE",
                     reference_no     = f"SALE-{sale.sales_id}",
+                    inventory_type   = detail.inventory_type or DEFAULT_INVENTORY_TYPE,
                     created_by       = current_user.username,
                 )
+                detail.unit_cost = inv.avg_cost
             except Exception as exc:
                 db.rollback()
                 raise HTTPException(
@@ -299,7 +346,7 @@ def create_sale(
 @router.get("/{sales_id}", response_model=SalesResponse)
 def get_sale(
     sales_id:     int,
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("sales.view")),
     db:           Session = Depends(get_db),
 ):
     sale = _load_sale(db, sales_id)
@@ -314,7 +361,7 @@ def get_sale(
 def update_sale(
     sales_id:     int,
     data:         SalesUpdate,
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("sales.view")),
     db:           Session = Depends(get_db),
 ):
     sale = db.query(Sales).filter(
@@ -338,8 +385,13 @@ def update_sale(
     if "details" in update_data and update_data["details"] is not None:
         new_details = update_data["details"]
 
-        # Stock check against new warehouse (use updated warehouse_id if changed)
+        # Stock check + bucket resolution against new warehouse (use updated
+        # warehouse_id if changed). NOTE: pre-existing gap — this endpoint does
+        # NOT call update_inventory_balance() for replaced details, so inventory
+        # is not actually adjusted when a sale is edited; that gap predates this
+        # change and is out of scope here (flagged in TKU enhancement Phase 1 plan).
         wh_id = sale.warehouse_id
+        resolved_types = {}
         if wh_id:
             for item in new_details:
                 product = db.query(Product).filter(
@@ -351,11 +403,12 @@ def update_sale(
                         status_code=404,
                         detail=f"Product #{item['product_id']} not found",
                     )
-                _check_stock(
+                resolved_types[item["product_id"]] = _resolve_sale_bucket(
                     db,
                     product_id    = item["product_id"],
                     warehouse_id  = wh_id,
                     requested_qty = item["quantity"],
+                    requested_type = item.get("inventory_type"),
                     product_name  = product.product_name,
                 )
 
@@ -366,6 +419,15 @@ def update_sale(
         detail_objs = []
         for item in new_details:
             computed = _compute_line(item["quantity"], item["unit_price"], item["discount_pct"])
+            inv_type = resolved_types.get(item["product_id"])
+            inv = None
+            if wh_id:
+                inv = db.query(Inventory).filter(
+                    Inventory.product_id == item["product_id"],
+                    Inventory.warehouse_id == wh_id,
+                    Inventory.inventory_type == inv_type,
+                    Inventory.deleted_at.is_(None),
+                ).first()
             detail = SalesDetail(
                 sales_id        = sales_id,
                 product_id      = item["product_id"],
@@ -376,6 +438,8 @@ def update_sale(
                 discount_amount = computed["discount_amount"],
                 vat_amount      = computed["vat_amount"],
                 line_total      = computed["line_total"],
+                inventory_type  = inv_type,
+                unit_cost       = inv.avg_cost if inv else None,
             )
             db.add(detail)
             detail_objs.append(detail)
@@ -402,7 +466,7 @@ def update_sale(
 @router.patch("/{sales_id}/payment-status", response_model=SalesResponse)
 def toggle_payment_status(
     sales_id:     int,
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("sales.view")),
     db:           Session = Depends(get_db),
 ):
     """Toggle payment_status between Paid and Unpaid."""
@@ -423,7 +487,7 @@ def toggle_payment_status(
 @router.delete("/{sales_id}")
 def delete_sale(
     sales_id:     int,
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("sales.view")),
     db:           Session = Depends(get_db),
 ):
     sale = db.query(Sales).filter(

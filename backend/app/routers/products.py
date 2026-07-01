@@ -10,6 +10,7 @@ from ..models.supplier_product import SupplierProduct
 from ..models.user import User
 from ..schemas.product import ProductCreate, ProductUpdate, ProductResponse
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 
 router = APIRouter(prefix="/products", tags=["Products"])
 
@@ -116,7 +117,7 @@ def list_products(
 
 
 @router.post("", response_model=ProductResponse)
-def create_product(data: ProductCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_product(data: ProductCreate, current_user: User = Depends(require_permission("master_data.products")), db: Session = Depends(get_db)):
     product = Product(**data.dict(), created_by=current_user.username)
     db.add(product)
     db.flush()  # get product_id before syncing supplier_products
@@ -135,7 +136,7 @@ def get_product(product_id: int, current_user: User = Depends(get_current_user),
 
 
 @router.put("/{product_id}", response_model=ProductResponse)
-def update_product(product_id: int, data: ProductUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_product(product_id: int, data: ProductUpdate, current_user: User = Depends(require_permission("master_data.products")), db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.product_id == product_id, Product.deleted_at.is_(None)).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -154,7 +155,7 @@ def update_product(product_id: int, data: ProductUpdate, current_user: User = De
 
 
 @router.delete("/{product_id}")
-def delete_product(product_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_product(product_id: int, current_user: User = Depends(require_permission("master_data.products")), db: Session = Depends(get_db)):
     product = db.query(Product).filter(Product.product_id == product_id, Product.deleted_at.is_(None)).first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")

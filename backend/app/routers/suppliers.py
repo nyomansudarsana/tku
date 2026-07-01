@@ -9,6 +9,7 @@ from ..models.supplier_product import SupplierProduct
 from ..models.user import User
 from ..schemas.supplier import SupplierCreate, SupplierUpdate, SupplierResponse
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 
 router = APIRouter(prefix="/suppliers", tags=["Suppliers"])
 
@@ -30,7 +31,7 @@ def list_suppliers(
 
 
 @router.post("", response_model=SupplierResponse)
-def create_supplier(data: SupplierCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_supplier(data: SupplierCreate, current_user: User = Depends(require_permission("master_data.suppliers")), db: Session = Depends(get_db)):
     supplier = Supplier(**data.dict(), created_by=current_user.username)
     db.add(supplier)
     db.commit()
@@ -47,7 +48,7 @@ def get_supplier(supplier_id: int, current_user: User = Depends(get_current_user
 
 
 @router.put("/{supplier_id}", response_model=SupplierResponse)
-def update_supplier(supplier_id: int, data: SupplierUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_supplier(supplier_id: int, data: SupplierUpdate, current_user: User = Depends(require_permission("master_data.suppliers")), db: Session = Depends(get_db)):
     supplier = db.query(Supplier).filter(Supplier.supplier_id == supplier_id, Supplier.deleted_at.is_(None)).first()
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
@@ -60,7 +61,7 @@ def update_supplier(supplier_id: int, data: SupplierUpdate, current_user: User =
 
 
 @router.delete("/{supplier_id}")
-def delete_supplier(supplier_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_supplier(supplier_id: int, current_user: User = Depends(require_permission("master_data.suppliers")), db: Session = Depends(get_db)):
     supplier = db.query(Supplier).filter(Supplier.supplier_id == supplier_id, Supplier.deleted_at.is_(None)).first()
     if not supplier:
         raise HTTPException(status_code=404, detail="Supplier not found")
@@ -105,7 +106,7 @@ def list_supplier_products(
 def link_product_to_supplier(
     supplier_id: int,
     data: dict,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("master_data.suppliers")),
     db: Session = Depends(get_db)
 ):
     """Link a product to a supplier (creates a SupplierProduct record)."""
@@ -146,7 +147,7 @@ def link_product_to_supplier(
 def unlink_product_from_supplier(
     supplier_id: int,
     product_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("master_data.suppliers")),
     db: Session = Depends(get_db)
 ):
     """Remove a product-supplier link."""

@@ -6,6 +6,8 @@ from datetime import datetime, date
 from ..database import get_db
 from ..models.sales_return import SalesReturn
 from ..models.sales import Sales
+from ..models.sales_detail import SalesDetail
+from ..models.inventory import Inventory
 from ..models.product import Product
 from ..models.damaged_stock import DamagedStock
 from ..models.user import User
@@ -14,7 +16,9 @@ from ..schemas.sales_return import (
     STATUS_TRANSITIONS,
 )
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
+from ..constants import DEFAULT_INVENTORY_TYPE
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/sales-returns", tags=["Sales Returns"])
@@ -38,7 +42,7 @@ def list_returns(
     date_to:    Optional[date] = None,
     page:       int = Query(1, ge=1),
     limit:      int = Query(20, ge=1, le=500),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("sales_returns.view")),
     db: Session = Depends(get_db)
 ):
     q = db.query(SalesReturn).options(
@@ -68,7 +72,7 @@ def list_returns(
 @router.post("", response_model=SalesReturnResponse)
 def create_return(
     data: SalesReturnCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("sales_returns.view")),
     db: Session = Depends(get_db)
 ):
     sale = db.query(Sales).filter(
@@ -84,6 +88,15 @@ def create_return(
         raise HTTPException(status_code=404, detail="Product not found")
 
     create_data = data.dict()
+    if not create_data.get("inventory_type"):
+        source_detail = db.query(SalesDetail).filter(
+            SalesDetail.sales_id == data.sales_id,
+            SalesDetail.product_id == data.product_id,
+        ).first()
+        create_data["inventory_type"] = (
+            source_detail.inventory_type if source_detail and source_detail.inventory_type
+            else DEFAULT_INVENTORY_TYPE
+        )
     ret = SalesReturn(**create_data, created_by=current_user.username)
     db.add(ret)
     try:
@@ -99,7 +112,7 @@ def create_return(
 @router.get("/{return_id}", response_model=SalesReturnResponse)
 def get_return(
     return_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("sales_returns.view")),
     db: Session = Depends(get_db)
 ):
     ret = load_return(db, return_id)
@@ -112,7 +125,7 @@ def get_return(
 def update_return(
     return_id: int,
     data: SalesReturnUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("sales_returns.view")),
     db: Session = Depends(get_db)
 ):
     ret = db.query(SalesReturn).filter(
@@ -150,6 +163,7 @@ def update_return(
         if old_status != "Approved" and new_status == "Approved":
             if ret.warehouse_id and ret.product_id:
                 ref = f"RTN-{ret.return_id}"
+                inv_type = ret.inventory_type or DEFAULT_INVENTORY_TYPE
                 try:
                     if ret.condition == "Good":
                         update_inventory_balance(
@@ -160,13 +174,21 @@ def update_return(
                             qty_out=0,
                             transaction_type="RETURN_GOOD",
                             reference_no=ref,
+                            inventory_type=inv_type,
                             created_by=current_user.username,
                         )
                         logger.info(
                             "Return %s: %s units of product %s restored to available stock",
                             ret.return_id, ret.quantity, ret.product_id,
                         )
-                    elif ret.condition in ("Defective", "Damaged"):
+                    elif ret.condition in ("Defective", "Damaged", "Incomplete"):
+                        bucket = db.query(Inventory).filter(
+                            Inventory.product_id == ret.product_id,
+                            Inventory.warehouse_id == ret.warehouse_id,
+                            Inventory.inventory_type == inv_type,
+                            Inventory.deleted_at.is_(None),
+                        ).first()
+                        unit_cost = bucket.avg_cost if bucket else None
                         damage = DamagedStock(
                             product_id=ret.product_id,
                             warehouse_id=ret.warehouse_id,
@@ -175,6 +197,9 @@ def update_return(
                             damage_date=ret.return_date,
                             source="Customer Return",
                             source_reference=ref,
+                            inventory_type=inv_type,
+                            unit_cost=unit_cost,
+                            loss_amount=(ret.quantity * unit_cost) if unit_cost is not None else None,
                             remarks=ret.remarks,
                             created_by=current_user.username,
                         )
@@ -207,7 +232,7 @@ def update_return(
 @router.delete("/{return_id}")
 def delete_return(
     return_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("sales_returns.view")),
     db: Session = Depends(get_db)
 ):
     ret = db.query(SalesReturn).filter(

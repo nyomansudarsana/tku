@@ -44,10 +44,14 @@ class BankAccountInfo(BaseModel):
 
 class SalesDetailCreate(BaseModel):
     product_id: int
-    quantity: float = 1
+    quantity: int = 1
     unit: str = "PCS"
     unit_price: float          # VAT-inclusive price from product master
     discount_pct: float = 0    # 0–100
+    # Ownership bucket to sell from; required only when the product has stock
+    # in more than one bucket at the chosen warehouse (server returns a 400
+    # listing the available buckets/quantities otherwise).
+    inventory_type: Optional[str] = None
 
     @field_validator("quantity")
     @classmethod
@@ -76,13 +80,15 @@ class SalesDetailResponse(BaseModel):
     sales_id: int
     product_id: int
     product: Optional[ProductInfo] = None
-    quantity: float
+    quantity: int
     unit: str
     unit_price: float
     discount_pct: float
     discount_amount: float
     vat_amount: float
     line_total: float
+    inventory_type: Optional[str] = None
+    unit_cost: Optional[float] = None
 
     class Config:
         from_attributes = True
@@ -178,7 +184,7 @@ class SalesResponse(BaseModel):
     # Legacy single-item fields (populated for pre-redesign records, null for new)
     product_id: Optional[int] = None
     product: Optional[ProductInfo] = None
-    quantity: Optional[float] = None
+    quantity: Optional[int] = None
     unit: Optional[str] = None
     sale_price: Optional[float] = None
     discount_pct: Optional[float] = None

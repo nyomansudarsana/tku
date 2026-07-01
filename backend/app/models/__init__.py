@@ -18,3 +18,4 @@ from .bulk_import import BulkImportHistory, BulkImportError
 from .supplier_return import SupplierReturn
 from .stock_opname import StockOpname, StockOpnameDetail
 from .damaged_stock import DamagedStock
+from .permission import Permission, UserPermission

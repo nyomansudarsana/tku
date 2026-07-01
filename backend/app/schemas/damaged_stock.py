@@ -12,11 +12,12 @@ VALID_REASONS = {
 class DamagedStockBase(BaseModel):
     product_id:       int
     warehouse_id:     Optional[int]  = None
-    quantity:         float
+    quantity:         int
     damage_reason:    str
     damage_date:      date
     source:           Optional[str]  = "Manual"
     source_reference: Optional[str]  = None
+    inventory_type:   Optional[str]  = None
     remarks:          Optional[str]  = None
 
     @field_validator("quantity")
@@ -32,7 +33,7 @@ class DamagedStockCreate(DamagedStockBase):
 
 
 class DamagedStockUpdate(BaseModel):
-    quantity:      Optional[float] = None
+    quantity:      Optional[int]   = None
     damage_reason: Optional[str]   = None
     damage_date:   Optional[date]  = None
     warehouse_id:  Optional[int]   = None
@@ -56,6 +57,8 @@ class WarehouseInfo(BaseModel):
 
 class DamagedStockResponse(DamagedStockBase):
     damaged_stock_id: int
+    unit_cost:        Optional[float]         = None
+    loss_amount:      Optional[float]         = None
     product:          Optional[ProductInfo]   = None
     warehouse:        Optional[WarehouseInfo] = None
     created_at:       Optional[datetime]      = None

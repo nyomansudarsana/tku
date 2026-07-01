@@ -7,13 +7,15 @@ from datetime import date, datetime
 
 class StockOpnameDetailCreate(BaseModel):
     product_id:   int
-    system_qty:   float = 0
-    good_qty:     float = 0     # sellable units counted (user fills this)
-    damaged_qty:  float = 0     # damaged units explicitly found (user fills this)
+    inventory_type: Optional[str] = None   # bucket being counted; see ../constants.py
+    system_qty:   int = 0
+    good_qty:     int = 0     # sellable units counted (user fills this)
+    damaged_qty:  int = 0     # damaged units explicitly found (user fills this)
+    incomplete_qty: int = 0   # units present but no longer sellable as a complete product
     reason:       Optional[str] = None
     remarks:      Optional[str] = None
 
-    @field_validator("good_qty", "damaged_qty")
+    @field_validator("good_qty", "damaged_qty", "incomplete_qty")
     @classmethod
     def non_negative(cls, v):
         if v < 0:
@@ -22,12 +24,13 @@ class StockOpnameDetailCreate(BaseModel):
 
 
 class StockOpnameDetailUpdate(BaseModel):
-    good_qty:     Optional[float] = None
-    damaged_qty:  Optional[float] = None
+    good_qty:     Optional[int] = None
+    damaged_qty:  Optional[int] = None
+    incomplete_qty: Optional[int] = None
     reason:       Optional[str]   = None
     remarks:      Optional[str]   = None
 
-    @field_validator("good_qty", "damaged_qty")
+    @field_validator("good_qty", "damaged_qty", "incomplete_qty")
     @classmethod
     def non_negative(cls, v):
         if v is not None and v < 0:
@@ -47,11 +50,13 @@ class StockOpnameDetailResponse(BaseModel):
     id:             int
     opname_id:      int
     product_id:     int
-    system_qty:     float
-    good_qty:       float = 0
-    damaged_qty:    float = 0
-    physical_qty:   float          # good_qty + damaged_qty
-    difference_qty: float          # good_qty - system_qty  (inventory adjustment)
+    inventory_type: Optional[str] = None
+    system_qty:     int
+    good_qty:       int = 0
+    damaged_qty:    int = 0
+    incomplete_qty: int = 0
+    physical_qty:   int          # good_qty + damaged_qty + incomplete_qty
+    difference_qty: int          # good_qty - system_qty  (inventory adjustment)
     reason:         Optional[str] = None
     remarks:        Optional[str] = None
     product:        Optional[_ProductInfo] = None

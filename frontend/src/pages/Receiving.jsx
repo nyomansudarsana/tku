@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { receivingsAPI } from '../api'
 import SearchableSelect from '../components/SearchableSelect'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
-import { formatDate, formatNumber } from '../utils/format'
+import { formatDate, formatNumber, formatCurrency } from '../utils/format'
 import { exportCsv } from '../utils/exportCsv'
 
 const UNITS = ['PCS', 'Pack', 'Unit', 'Box', 'Set', 'Kg', 'Liter']
+const INV_TYPES = ['TKU Product', 'Consignment', 'Titip Jual']
 
 const empty = {
   received_date:     new Date().toISOString().slice(0, 10),
@@ -17,10 +19,13 @@ const empty = {
   quantity_received: '',
   quantity_rejected: '0',
   unit:              'PCS',
+  purchase_price:    '',
+  inventory_type:    'TKU Product',
   notes:             '',
 }
 
 export default function Receiving() {
+  const [searchParams] = useSearchParams()
   const [items,    setItems]    = useState([])
   const [total,    setTotal]    = useState(0)
   const [page,     setPage]     = useState(1)
@@ -30,19 +35,23 @@ export default function Receiving() {
   const [deleteId, setDeleteId] = useState(null)
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState('')
+  // Seeded from the notification bell's click-through (?has_rejected=true)
+  const [hasRejectedFilter, setHasRejectedFilter] = useState(searchParams.get('has_rejected') === 'true')
   const limit = 15
 
   const load = useCallback(async () => {
-    const res = await receivingsAPI.list({ page, limit })
+    const params = { page, limit }
+    if (hasRejectedFilter) params.has_rejected = true
+    const res = await receivingsAPI.list(params)
     setItems(res.data.items)
     setTotal(res.data.total)
-  }, [page])
+  }, [page, hasRejectedFilter])
 
   useEffect(() => { load() }, [load])
 
   // Derived: accepted = received − rejected (shown read-only in form)
-  const qtyReceived = parseFloat(form.quantity_received) || 0
-  const qtyRejected = parseFloat(form.quantity_rejected) || 0
+  const qtyReceived = parseInt(form.quantity_received) || 0
+  const qtyRejected = parseInt(form.quantity_rejected) || 0
   const qtyAccepted = Math.max(0, qtyReceived - qtyRejected)
 
   const openCreate = () => { setEditing(null); setForm(empty); setError(''); setModal(true) }
@@ -57,6 +66,8 @@ export default function Receiving() {
       quantity_received: String(item.quantity_received),
       quantity_rejected: String(item.quantity_rejected),
       unit:              item.unit,
+      purchase_price:    item.purchase_price != null ? String(item.purchase_price) : '',
+      inventory_type:    item.inventory_type || 'TKU Product',
       notes:             item.notes || '',
     })
     setError('')
@@ -67,13 +78,23 @@ export default function Receiving() {
     e.preventDefault()
     setError('')
 
-    const received = parseFloat(form.quantity_received)
-    const rejected = parseFloat(form.quantity_rejected) || 0
+    const received = parseInt(form.quantity_received)
+    const rejected = parseInt(form.quantity_rejected) || 0
+    const purchasePrice = form.purchase_price === '' ? null : parseFloat(form.purchase_price)
 
     if (!received || received <= 0) { setError('Quantity received must be greater than 0'); return }
     if (rejected < 0)               { setError('Quantity rejected cannot be negative'); return }
     if (rejected > received)        { setError('Quantity rejected cannot exceed quantity received'); return }
     if (!form.product_id)           { setError('Please select a product'); return }
+    if (purchasePrice === null || purchasePrice < 0) {
+      setError('Purchase Price From Vendor is required (enter 0 only if genuinely free stock)')
+      return
+    }
+    if (purchasePrice === 0 && !window.confirm(
+      'Purchase Price is 0. This will affect inventory valuation and margin reporting. Continue anyway?'
+    )) {
+      return
+    }
 
     setLoading(true)
     try {
@@ -86,6 +107,8 @@ export default function Receiving() {
         quantity_rejected: rejected,
         // quantity_accepted is computed server-side; sending it doesn't hurt
         unit:              form.unit,
+        purchase_price:    purchasePrice,
+        inventory_type:    form.inventory_type,
         notes:             form.notes || null,
       }
       if (editing) await receivingsAPI.update(editing.receiving_id, data)
@@ -116,11 +139,13 @@ export default function Receiving() {
               accepted: r.quantity_accepted,
               rejected: r.quantity_rejected,
               unit:     r.unit,
+              purchase_price: r.purchase_price,
+              inventory_type: r.inventory_type,
               notes:    r.notes || '',
             }))
             exportCsv(rows,
-              ['date','supplier','product','received','accepted','rejected','unit','notes'],
-              { date:'Date', supplier:'Supplier', product:'Product', received:'Received', accepted:'Accepted', rejected:'Rejected', unit:'Unit', notes:'Notes' },
+              ['date','supplier','product','received','accepted','rejected','unit','purchase_price','inventory_type','notes'],
+              { date:'Date', supplier:'Supplier', product:'Product', received:'Received', accepted:'Accepted', rejected:'Rejected', unit:'Unit', purchase_price:'Purchase Price', inventory_type:'Inventory Type', notes:'Notes' },
               'receiving-export')
           }}>Export CSV</button>
           <button className="btn btn-primary" onClick={openCreate}>+ New Receiving</button>
@@ -128,17 +153,28 @@ export default function Receiving() {
       </div>
 
       <div className="card">
+        <div style={{ marginBottom: '1rem' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8125rem', color: '#374151', cursor: 'pointer', width: 'fit-content' }}>
+            <input
+              type="checkbox"
+              checked={hasRejectedFilter}
+              onChange={e => { setHasRejectedFilter(e.target.checked); setPage(1) }}
+            />
+            Show only receivings with rejected items
+          </label>
+        </div>
         <div className="table-container">
           <table className="table">
             <thead>
               <tr>
                 <th>#</th><th>Date</th><th>Supplier</th><th>Product</th><th>Warehouse</th>
-                <th>Received</th><th>Accepted</th><th>Rejected</th><th>Unit</th><th>Notes</th><th>Actions</th>
+                <th>Received</th><th>Accepted</th><th>Rejected</th><th>Unit</th>
+                <th>Purchase Price</th><th>Inventory Type</th><th>Notes</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {items.length === 0
-                ? <tr><td colSpan={11} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>No receiving records</td></tr>
+                ? <tr><td colSpan={13} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>No receiving records</td></tr>
                 : items.map((item, i) => (
                   <tr key={item.receiving_id}>
                     <td style={{ color: '#94a3b8' }}>{(page - 1) * limit + i + 1}</td>
@@ -154,6 +190,12 @@ export default function Receiving() {
                       </span>
                     </td>
                     <td>{item.unit}</td>
+                    <td>{formatCurrency(item.purchase_price)}</td>
+                    <td>
+                      <span className={`badge ${item.inventory_type === 'TKU Product' ? 'badge-blue' : item.inventory_type === 'Consignment' ? 'badge-purple' : 'badge-yellow'}`}>
+                        {item.inventory_type}
+                      </span>
+                    </td>
                     <td style={{ maxWidth: '10rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.notes || '—'}</td>
                     <td>
                       <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -246,11 +288,21 @@ export default function Receiving() {
               </select>
             </div>
 
+            <div>
+              <label className="label">Inventory Type *</label>
+              <select className="input" value={form.inventory_type} onChange={e => setForm(f => ({ ...f, inventory_type: e.target.value }))}>
+                {INV_TYPES.map(t => <option key={t}>{t}</option>)}
+              </select>
+              <p style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.25rem' }}>
+                Who owns this stock — determined at receiving time
+              </p>
+            </div>
+
             {/* ── New quantity workflow ── */}
             <div>
               <label className="label">Quantity Received *</label>
               <input
-                className="input" type="number" required min="0.01" step="0.01"
+                className="input" type="number" required min="1" step="1"
                 placeholder="Total quantity from supplier"
                 value={form.quantity_received}
                 onChange={e => setForm(f => ({ ...f, quantity_received: e.target.value }))}
@@ -260,11 +312,24 @@ export default function Receiving() {
             <div>
               <label className="label">Quantity Rejected</label>
               <input
-                className="input" type="number" min="0" step="0.01"
+                className="input" type="number" min="0" step="1"
                 placeholder="Items rejected / damaged"
                 value={form.quantity_rejected}
                 onChange={e => setForm(f => ({ ...f, quantity_rejected: e.target.value }))}
               />
+            </div>
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="label">Purchase Price From Vendor (per unit) *</label>
+              <input
+                className="input" type="number" required min="0" step="1"
+                placeholder="e.g. 250000"
+                value={form.purchase_price}
+                onChange={e => setForm(f => ({ ...f, purchase_price: e.target.value }))}
+              />
+              <p style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.25rem' }}>
+                Used for inventory valuation, damage loss calculation and sales margin reporting
+              </p>
             </div>
 
             {/* Auto-calculated accepted */}

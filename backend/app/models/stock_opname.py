@@ -28,11 +28,18 @@ class StockOpnameDetail(Base):
     id              = Column(Integer, primary_key=True, index=True)
     opname_id       = Column(Integer, ForeignKey("stock_opnames.opname_id"), nullable=False)
     product_id      = Column(Integer, ForeignKey("products.product_id"), nullable=False)
-    system_qty      = Column(Float, nullable=False, default=0)
-    good_qty        = Column(Float, nullable=False, default=0)   # sellable units counted
-    damaged_qty     = Column(Float, nullable=False, default=0)   # damaged units found
-    physical_qty    = Column(Float, nullable=False, default=0)   # good_qty + damaged_qty (stored for reporting)
-    difference_qty  = Column(Float, nullable=False, default=0)   # good_qty - system_qty  (inventory impact)
+    # Ownership bucket being counted (see ../constants.py) — one detail line per
+    # (product, inventory_type) bucket present in the warehouse's Inventory.
+    inventory_type  = Column(String(30), nullable=True)
+    system_qty      = Column(Integer, nullable=False, default=0)
+    good_qty        = Column(Integer, nullable=False, default=0)   # sellable units counted
+    damaged_qty     = Column(Integer, nullable=False, default=0)   # damaged units found
+    # Units that are physically present but no longer sellable as a complete
+    # product (e.g. cannibalized for parts) — routed to Damaged Stock on
+    # approval just like damaged_qty, with damage_reason = "Incomplete".
+    incomplete_qty  = Column(Integer, nullable=False, default=0)
+    physical_qty    = Column(Integer, nullable=False, default=0)   # good_qty + damaged_qty + incomplete_qty
+    difference_qty  = Column(Integer, nullable=False, default=0)   # good_qty - system_qty  (inventory impact)
     reason          = Column(String(100), nullable=True)
     remarks         = Column(Text, nullable=True)
 

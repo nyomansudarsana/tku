@@ -5,10 +5,13 @@ from typing import Optional
 from datetime import datetime, date
 from ..database import get_db
 from ..models.damaged_stock import DamagedStock
+from ..models.inventory import Inventory
 from ..models.user import User
 from ..schemas.damaged_stock import DamagedStockCreate, DamagedStockUpdate, DamagedStockResponse
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
+from ..constants import DEFAULT_INVENTORY_TYPE
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +43,7 @@ def list_damaged_stocks(
     date_to:      Optional[date] = None,
     page:         int = Query(1, ge=1),
     limit:        int = Query(20, ge=1, le=500),
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("damaged_stock.view")),
     db:           Session = Depends(get_db),
 ):
     q = db.query(DamagedStock).options(
@@ -71,10 +74,42 @@ def list_damaged_stocks(
 @router.post("", response_model=DamagedStockResponse)
 def create_damaged_stock(
     data:         DamagedStockCreate,
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("damaged_stock.view")),
     db:           Session = Depends(get_db),
 ):
-    record = DamagedStock(**data.dict(), created_by=current_user.username)
+    create_data = data.dict()
+
+    # ── Resolve ownership bucket + cost snapshot ──────────────────────────────
+    inv_type = create_data.get("inventory_type")
+    resolved_inv = None
+    if data.warehouse_id:
+        buckets = db.query(Inventory).filter(
+            Inventory.product_id == data.product_id,
+            Inventory.warehouse_id == data.warehouse_id,
+            Inventory.deleted_at.is_(None),
+            Inventory.quantity > 0,
+        ).all()
+        if inv_type:
+            resolved_inv = next((b for b in buckets if b.inventory_type == inv_type), None)
+        elif len(buckets) > 1:
+            options = ", ".join(f"{b.inventory_type} ({b.quantity})" for b in buckets)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"This product has stock in more than one inventory type at this "
+                    f"warehouse: {options}. Please specify which one is damaged."
+                ),
+            )
+        elif buckets:
+            resolved_inv = buckets[0]
+            inv_type = resolved_inv.inventory_type
+    create_data["inventory_type"] = inv_type or DEFAULT_INVENTORY_TYPE
+    create_data["unit_cost"] = resolved_inv.avg_cost if resolved_inv else None
+    create_data["loss_amount"] = (
+        create_data["quantity"] * resolved_inv.avg_cost if resolved_inv else None
+    )
+
+    record = DamagedStock(**create_data, created_by=current_user.username)
     db.add(record)
     db.flush()  # get damaged_stock_id
 
@@ -95,10 +130,11 @@ def create_damaged_stock(
                 qty_out          = record.quantity,
                 transaction_type = "DAMAGED",
                 reference_no     = f"DMG-{record.damaged_stock_id}",
+                inventory_type   = record.inventory_type or DEFAULT_INVENTORY_TYPE,
                 created_by       = current_user.username,
             )
             logger.info(
-                "damaged_stock %s: deducted %.2f units of product %s from inventory",
+                "damaged_stock %s: deducted %d units of product %s from inventory",
                 record.damaged_stock_id, record.quantity, record.product_id,
             )
         except Exception as exc:
@@ -118,7 +154,7 @@ def create_damaged_stock(
 @router.get("/{damaged_stock_id}", response_model=DamagedStockResponse)
 def get_damaged_stock(
     damaged_stock_id: int,
-    current_user:     User    = Depends(get_current_user),
+    current_user:     User    = Depends(require_permission("damaged_stock.view")),
     db:               Session = Depends(get_db),
 ):
     record = _load(db, damaged_stock_id)
@@ -131,7 +167,7 @@ def get_damaged_stock(
 def update_damaged_stock(
     damaged_stock_id: int,
     data:             DamagedStockUpdate,
-    current_user:     User    = Depends(get_current_user),
+    current_user:     User    = Depends(require_permission("damaged_stock.view")),
     db:               Session = Depends(get_db),
 ):
     record = db.query(DamagedStock).filter(
@@ -150,7 +186,7 @@ def update_damaged_stock(
 @router.delete("/{damaged_stock_id}")
 def delete_damaged_stock(
     damaged_stock_id: int,
-    current_user:     User    = Depends(get_current_user),
+    current_user:     User    = Depends(require_permission("damaged_stock.view")),
     db:               Session = Depends(get_db),
 ):
     record = db.query(DamagedStock).filter(

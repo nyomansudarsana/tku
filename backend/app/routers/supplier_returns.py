@@ -12,7 +12,9 @@ from ..schemas.supplier_return import (
     STATUS_TRANSITIONS,
 )
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
+from ..constants import DEFAULT_INVENTORY_TYPE
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/supplier-returns", tags=["Supplier Returns"])
@@ -38,7 +40,7 @@ def list_supplier_returns(
     date_to:     Optional[date] = None,
     page:        int = Query(1, ge=1),
     limit:       int = Query(20, ge=1, le=500),
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("supplier_returns.view")),
     db:           Session = Depends(get_db),
 ):
     q = db.query(SupplierReturn).options(
@@ -70,10 +72,15 @@ def list_supplier_returns(
 @router.post("", response_model=SupplierReturnResponse)
 def create_supplier_return(
     data:         SupplierReturnCreate,
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("supplier_returns.view")),
     db:           Session = Depends(get_db),
 ):
-    # When linked to a receiving, validate quantity ≤ quantity_rejected
+    create_data = data.dict()
+
+    # When linked to a receiving, validate quantity ≤ quantity_rejected and
+    # inherit the receiving's ownership bucket (rejected goods never entered
+    # Inventory, so the bucket is metadata-only until this return is later
+    # deducted on "Sent To Supplier").
     if data.receiving_id:
         rcv = db.query(Receiving).filter(
             Receiving.receiving_id == data.receiving_id,
@@ -81,14 +88,17 @@ def create_supplier_return(
         ).first()
         if not rcv:
             raise HTTPException(status_code=404, detail=f"Receiving #{data.receiving_id} not found")
-        if data.quantity > rcv.quantity_rejected + 0.001:
+        if data.quantity > rcv.quantity_rejected:
             raise HTTPException(
                 status_code=400,
                 detail=f"Return quantity ({data.quantity}) exceeds the rejected quantity "
                        f"from Receiving #{data.receiving_id} ({rcv.quantity_rejected}).",
             )
+        create_data["inventory_type"] = rcv.inventory_type
 
-    create_data = data.dict()
+    if not create_data.get("inventory_type"):
+        create_data["inventory_type"] = DEFAULT_INVENTORY_TYPE
+
     sr = SupplierReturn(**create_data, created_by=current_user.username)
     db.add(sr)
     try:
@@ -104,7 +114,7 @@ def create_supplier_return(
 @router.get("/{return_id}", response_model=SupplierReturnResponse)
 def get_supplier_return(
     return_id:    int,
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("supplier_returns.view")),
     db:           Session = Depends(get_db),
 ):
     r = _load(db, return_id)
@@ -117,7 +127,7 @@ def get_supplier_return(
 def update_supplier_return(
     return_id:    int,
     data:         SupplierReturnUpdate,
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("supplier_returns.view")),
     db:           Session = Depends(get_db),
 ):
     sr = db.query(SupplierReturn).filter(
@@ -163,10 +173,11 @@ def update_supplier_return(
                 qty_out          = sr.quantity,
                 transaction_type = "SUPPLIER_RETURN",
                 reference_no     = f"SRTN-{sr.return_id}",
+                inventory_type   = sr.inventory_type or DEFAULT_INVENTORY_TYPE,
                 created_by       = current_user.username,
             )
             logger.info(
-                "supplier_return %s: deducted %.2f units of product %s (sent to supplier)",
+                "supplier_return %s: deducted %d units of product %s (sent to supplier)",
                 return_id, sr.quantity, sr.product_id,
             )
         except Exception as exc:
@@ -186,7 +197,7 @@ def update_supplier_return(
 @router.delete("/{return_id}")
 def delete_supplier_return(
     return_id:    int,
-    current_user: User    = Depends(get_current_user),
+    current_user: User    = Depends(require_permission("supplier_returns.view")),
     db:           Session = Depends(get_db),
 ):
     sr = db.query(SupplierReturn).filter(

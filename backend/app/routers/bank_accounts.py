@@ -7,6 +7,7 @@ from ..models.bank_account import BankAccount
 from ..models.user import User
 from ..schemas.bank_account import BankAccountCreate, BankAccountUpdate, BankAccountResponse
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 
 router = APIRouter(prefix="/bank-accounts", tags=["Bank Accounts"])
 
@@ -39,7 +40,7 @@ def list_bank_accounts(
 @router.post("", response_model=BankAccountResponse)
 def create_bank_account(
     data: BankAccountCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("master_data.bank_accounts")),
     db: Session = Depends(get_db)
 ):
     bank = BankAccount(**data.dict(), created_by=current_user.username)
@@ -68,7 +69,7 @@ def get_bank_account(
 def update_bank_account(
     bank_id: int,
     data: BankAccountUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("master_data.bank_accounts")),
     db: Session = Depends(get_db)
 ):
     bank = db.query(BankAccount).filter(
@@ -88,7 +89,7 @@ def update_bank_account(
 @router.delete("/{bank_id}")
 def delete_bank_account(
     bank_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("master_data.bank_accounts")),
     db: Session = Depends(get_db)
 ):
     bank = db.query(BankAccount).filter(

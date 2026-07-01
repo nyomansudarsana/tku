@@ -1,6 +1,7 @@
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, model_validator, field_validator
 from typing import Optional
 from datetime import date, datetime
+from ..constants import INVENTORY_TYPES, DEFAULT_INVENTORY_TYPE
 
 
 class ReceivingBase(BaseModel):
@@ -13,10 +14,12 @@ class ReceivingBase(BaseModel):
     supplier_id:       Optional[int] = None
     product_id:        int
     warehouse_id:      Optional[int] = None
-    quantity_received: float
-    quantity_rejected: float = 0
-    quantity_accepted: float = 0   # computed; stored for reporting
+    quantity_received: int
+    quantity_rejected: int = 0
+    quantity_accepted: int = 0   # computed; stored for reporting
     unit:              str = "PCS"
+    purchase_price:    float = 0
+    inventory_type:    str = DEFAULT_INVENTORY_TYPE
     notes:             Optional[str] = None
 
 
@@ -24,31 +27,52 @@ class ReceivingCreate(BaseModel):
     """
     New workflow: user provides quantity_received + quantity_rejected.
     quantity_accepted is auto-calculated = quantity_received - quantity_rejected.
+
+    purchase_price is required (not defaulted) — it drives Inventory.avg_cost,
+    which in turn drives inventory valuation, damage loss and sales margin.
+    A value of 0 is allowed but flagged by the frontend for confirmation since
+    it usually means an omitted entry, not genuinely free stock.
     """
     received_date:     date
     supplier_id:       Optional[int] = None
     product_id:        int
     warehouse_id:      Optional[int] = None
-    quantity_received: float
-    quantity_rejected: float = 0
+    quantity_received: int
+    quantity_rejected: int = 0
     # quantity_accepted sent by client is ignored — computed by validator below
-    quantity_accepted: float = 0
+    quantity_accepted: int = 0
     unit:              str = "PCS"
+    purchase_price:    float
+    inventory_type:    str = DEFAULT_INVENTORY_TYPE
     notes:             Optional[str] = None
+
+    @field_validator("purchase_price")
+    @classmethod
+    def validate_purchase_price(cls, v):
+        if v < 0:
+            raise ValueError("purchase_price cannot be negative")
+        return v
+
+    @field_validator("inventory_type")
+    @classmethod
+    def validate_inventory_type(cls, v):
+        if v not in INVENTORY_TYPES:
+            raise ValueError(f"inventory_type must be one of: {', '.join(INVENTORY_TYPES)}")
+        return v
 
     @model_validator(mode='after')
     def compute_accepted_qty(self) -> 'ReceivingCreate':
         """Enforce: accepted = received − rejected (min 0). Reject > received is an error."""
-        received = self.quantity_received or 0.0
-        rejected = self.quantity_rejected or 0.0
+        received = self.quantity_received or 0
+        rejected = self.quantity_rejected or 0
         if rejected < 0:
             raise ValueError("quantity_rejected cannot be negative")
-        if rejected > received + 0.001:
+        if rejected > received:
             raise ValueError(
                 f"quantity_rejected ({rejected}) cannot exceed "
                 f"quantity_received ({received})"
             )
-        self.quantity_accepted = max(0.0, round(received - rejected, 6))
+        self.quantity_accepted = max(0, received - rejected)
         return self
 
 
@@ -57,11 +81,20 @@ class ReceivingUpdate(BaseModel):
     supplier_id:       Optional[int]   = None
     product_id:        Optional[int]   = None
     warehouse_id:      Optional[int]   = None
-    quantity_received: Optional[float] = None
-    quantity_rejected: Optional[float] = None
-    quantity_accepted: Optional[float] = None
+    quantity_received: Optional[int]   = None
+    quantity_rejected: Optional[int]   = None
+    quantity_accepted: Optional[int]   = None
     unit:              Optional[str]   = None
+    purchase_price:    Optional[float] = None
+    inventory_type:    Optional[str]   = None
     notes:             Optional[str]   = None
+
+    @field_validator("inventory_type")
+    @classmethod
+    def validate_inventory_type(cls, v):
+        if v is not None and v not in INVENTORY_TYPES:
+            raise ValueError(f"inventory_type must be one of: {', '.join(INVENTORY_TYPES)}")
+        return v
 
     @model_validator(mode='after')
     def recalculate_if_needed(self) -> 'ReceivingUpdate':
@@ -71,9 +104,9 @@ class ReceivingUpdate(BaseModel):
         if received is not None and rejected is not None:
             if rejected < 0:
                 raise ValueError("quantity_rejected cannot be negative")
-            if rejected > received + 0.001:
+            if rejected > received:
                 raise ValueError("quantity_rejected cannot exceed quantity_received")
-            self.quantity_accepted = max(0.0, round(received - rejected, 6))
+            self.quantity_accepted = max(0, received - rejected)
         elif received is not None and self.quantity_accepted is None:
             # only received changed — clear accepted so caller must re-specify
             pass

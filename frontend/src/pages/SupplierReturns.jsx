@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { supplierReturnsAPI, receivingsAPI } from '../api'
+import SearchableSelect from '../components/SearchableSelect'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
@@ -12,6 +14,7 @@ const REASONS = [
   'Defective product',
   'Quantity mismatch',
   'Expired product',
+  'Return to Supplier',
   'Other',
 ]
 
@@ -72,10 +75,12 @@ function InfoRow({ label, value, highlight }) {
 }
 
 export default function SupplierReturns() {
+  const [searchParams] = useSearchParams()
   const [items,       setItems]       = useState([])
   const [total,       setTotal]       = useState(0)
   const [page,        setPage]        = useState(1)
-  const [filters,     setFilters]     = useState({ status: '' })
+  // Seeded from the notification bell's click-through (e.g. ?status=Pending)
+  const [filters,     setFilters]     = useState({ status: searchParams.get('status') || '' })
   const [modal,       setModal]       = useState(false)
   const [editing,     setEditing]     = useState(null)
   const [form,        setForm]        = useState(emptyForm)
@@ -167,7 +172,7 @@ export default function SupplierReturns() {
   const handleSave = async (e) => {
     e.preventDefault()
     setError('')
-    const qty = parseFloat(form.quantity)
+    const qty = parseInt(form.quantity)
     if (!qty || qty <= 0) { setError('Quantity must be greater than 0'); return }
 
     // Extra client-side guard in create-from-receiving mode
@@ -229,19 +234,30 @@ export default function SupplierReturns() {
   const StandaloneForm = () => (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
       <div>
-        <label className="label">Supplier ID</label>
-        <input className="input" type="number" required value={form.supplier_id}
-          onChange={e => setForm(f => ({ ...f, supplier_id: e.target.value }))}
-          placeholder="Supplier ID" />
-        <p style={{ fontSize: '0.7rem', color: '#94a3b8', marginTop: '0.25rem' }}>
-          Use Master Data → Suppliers to look up IDs
-        </p>
+        <label className="label">Supplier *</label>
+        <SearchableSelect
+          endpoint="/suppliers"
+          labelField="supplier_name"
+          valueField="supplier_id"
+          value={form.supplier_id}
+          onChange={v => setForm(f => ({ ...f, supplier_id: v }))}
+          placeholder="Search supplier..."
+          required
+          emptyHint="No suppliers found"
+        />
       </div>
       <div>
-        <label className="label">Product ID</label>
-        <input className="input" type="number" required value={form.product_id}
-          onChange={e => setForm(f => ({ ...f, product_id: e.target.value }))}
-          placeholder="Product ID" />
+        <label className="label">Product *</label>
+        <SearchableSelect
+          endpoint="/products"
+          labelField="product_name"
+          valueField="product_id"
+          value={form.product_id}
+          onChange={v => setForm(f => ({ ...f, product_id: v }))}
+          placeholder="Search product..."
+          required
+          emptyHint="No products found"
+        />
       </div>
       <div>
         <label className="label">Return Date *</label>
@@ -250,7 +266,7 @@ export default function SupplierReturns() {
       </div>
       <div>
         <label className="label">Return Quantity *</label>
-        <input className="input" type="number" required min="0.01" step="0.01"
+        <input className="input" type="number" required min="1" step="1"
           value={form.quantity} onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
       </div>
       <div>
@@ -365,7 +381,7 @@ export default function SupplierReturns() {
           <div>
             <label className="label">Return Quantity * <span style={{ color: '#94a3b8', fontWeight: 400 }}>(max: {formatNumber(maxQty)})</span></label>
             <input
-              className="input" type="number" required min="0.01" step="0.01" max={maxQty}
+              className="input" type="number" required min="1" step="1" max={maxQty}
               value={form.quantity}
               style={{ borderColor: form.quantity && !qtyOk ? '#f87171' : undefined }}
               onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))}
@@ -418,7 +434,7 @@ export default function SupplierReturns() {
       </div>
       <div>
         <label className="label">Quantity *</label>
-        <input className="input" type="number" required min="0.01" step="0.01"
+        <input className="input" type="number" required min="1" step="1"
           value={form.quantity} onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
       </div>
       <div>

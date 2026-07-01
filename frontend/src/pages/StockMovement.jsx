@@ -7,11 +7,15 @@ import Pagination from '../components/Pagination'
 import { formatDate, formatNumber } from '../utils/format'
 import { exportCsv } from '../utils/exportCsv'
 
-const MOVEMENT_TYPES = ['IN', 'OUT', 'TRANSFER', 'ADJUSTMENT']
+// Stock Movement now only tracks warehouse-to-warehouse transfers — Receiving
+// handles incoming stock, Sales handles outgoing stock, Returns handle return
+// flows, and Stock Opname handles adjustments. IN/OUT/ADJUSTMENT are retained
+// here only so historical records remain visible/filterable.
+const HISTORICAL_MOVEMENT_TYPES = ['IN', 'OUT', 'TRANSFER', 'ADJUSTMENT']
 const empty = {
   movement_date: new Date().toISOString().slice(0, 10),
   product_id: '',
-  movement_type: 'IN',
+  movement_type: 'TRANSFER',
   quantity: '',
   from_warehouse_id: '',
   to_warehouse_id: '',
@@ -65,14 +69,23 @@ export default function StockMovement() {
   const handleSave = async (e) => {
     e.preventDefault()
     setError('')
+    if (!form.from_warehouse_id || !form.to_warehouse_id) {
+      setError('Both From and To warehouse are required for a transfer.')
+      return
+    }
+    if (form.from_warehouse_id === form.to_warehouse_id) {
+      setError('From and To warehouse must be different.')
+      return
+    }
     setLoading(true)
     try {
       const data = {
         ...form,
+        movement_type: 'TRANSFER',
         product_id: parseInt(form.product_id),
-        quantity: parseFloat(form.quantity),
-        from_warehouse_id: form.from_warehouse_id ? parseInt(form.from_warehouse_id) : null,
-        to_warehouse_id: form.to_warehouse_id ? parseInt(form.to_warehouse_id) : null,
+        quantity: parseInt(form.quantity),
+        from_warehouse_id: parseInt(form.from_warehouse_id),
+        to_warehouse_id: parseInt(form.to_warehouse_id),
       }
       if (editing) await stockMovementsAPI.update(editing.movement_id, data)
       else await stockMovementsAPI.create(data)
@@ -85,16 +98,12 @@ export default function StockMovement() {
     }
   }
 
-  const needsFrom = ['OUT', 'TRANSFER'].includes(form.movement_type)
-  const needsTo = ['IN', 'TRANSFER'].includes(form.movement_type)
-  const isAdjustment = form.movement_type === 'ADJUSTMENT'
-
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
         <div>
           <h1 style={{ fontSize: '1.5rem', fontWeight: 700, color: '#1e293b' }}>Stock Movement</h1>
-          <p style={{ color: '#64748b', fontSize: '0.875rem' }}>Track IN · OUT · TRANSFER · ADJUSTMENT</p>
+          <p style={{ color: '#64748b', fontSize: '0.875rem' }}>Warehouse-to-warehouse transfers — Receiving/Sales/Returns/Opname handle every other stock change</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button className="btn btn-secondary" onClick={() => {
@@ -109,7 +118,7 @@ export default function StockMovement() {
         <div style={{ marginBottom: '1rem' }}>
           <select className="input" style={{ width: 'auto' }} value={typeFilter} onChange={e => { setTypeFilter(e.target.value); setPage(1) }}>
             <option value="">All Movement Types</option>
-            {MOVEMENT_TYPES.map(t => <option key={t}>{t}</option>)}
+            {HISTORICAL_MOVEMENT_TYPES.map(t => <option key={t}>{t}</option>)}
           </select>
         </div>
 
@@ -135,10 +144,14 @@ export default function StockMovement() {
                     <td>{item.to_warehouse?.warehouse_name || '—'}</td>
                     <td style={{ maxWidth: '10rem', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.remark || '—'}</td>
                     <td>
-                      <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <button className="btn btn-secondary btn-sm" onClick={() => openEdit(item)}>Edit</button>
-                        <button className="btn btn-danger btn-sm" onClick={() => setDeleteId(item.movement_id)}>Delete</button>
-                      </div>
+                      {item.movement_type === 'TRANSFER' ? (
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          <button className="btn btn-secondary btn-sm" onClick={() => openEdit(item)}>Edit</button>
+                          <button className="btn btn-danger btn-sm" onClick={() => setDeleteId(item.movement_id)}>Delete</button>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: '0.72rem', color: '#94a3b8', fontStyle: 'italic' }}>Historical — read only</span>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -149,7 +162,7 @@ export default function StockMovement() {
       </div>
 
       {/* Form Modal */}
-      <Modal open={modal} onClose={() => setModal(false)} title={editing ? 'Edit Movement' : 'New Stock Movement'} size="md">
+      <Modal open={modal} onClose={() => setModal(false)} title={editing ? 'Edit Movement' : 'New Stock Transfer'} size="md">
         <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           {error && (
             <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '0.5rem', padding: '0.75rem', color: '#dc2626', fontSize: '0.875rem' }}>
@@ -162,14 +175,6 @@ export default function StockMovement() {
               <label className="label">Date *</label>
               <input className="input" type="date" required value={form.movement_date}
                 onChange={e => setForm(f => ({ ...f, movement_date: e.target.value }))} />
-            </div>
-
-            <div>
-              <label className="label">Movement Type *</label>
-              <select className="input" value={form.movement_type}
-                onChange={e => setForm(f => ({ ...f, movement_type: e.target.value, from_warehouse_id: '', to_warehouse_id: '' }))}>
-                {MOVEMENT_TYPES.map(t => <option key={t}>{t}</option>)}
-              </select>
             </div>
 
             <div style={{ gridColumn: '1 / -1' }}>
@@ -188,39 +193,40 @@ export default function StockMovement() {
 
             <div style={{ gridColumn: '1 / -1' }}>
               <label className="label">Quantity *</label>
-              <input className="input" type="number" required min="0.01" step="0.01" value={form.quantity}
+              <input className="input" type="number" required min="1" step="1" value={form.quantity}
                 onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
             </div>
 
-            {(needsFrom || isAdjustment) && (
-              <div>
-                <label className="label">From Warehouse{needsFrom ? ' *' : ''}</label>
-                <AsyncDropdown
-                  endpoint="/warehouses"
-                  labelField="warehouse_name"
-                  valueField="warehouse_id"
-                  value={form.from_warehouse_id}
-                  onChange={v => setForm(f => ({ ...f, from_warehouse_id: v }))}
-                  placeholder="Select warehouse..."
-                  required={needsFrom}
-                  emptyHint="No warehouses found"
-                />
-              </div>
-            )}
+            <div>
+              <label className="label">From Warehouse *</label>
+              <AsyncDropdown
+                endpoint="/warehouses"
+                labelField="warehouse_name"
+                valueField="warehouse_id"
+                value={form.from_warehouse_id}
+                onChange={v => setForm(f => ({ ...f, from_warehouse_id: v }))}
+                placeholder="Select warehouse..."
+                required
+                emptyHint="No warehouses found"
+              />
+            </div>
 
-            {(needsTo || isAdjustment) && (
-              <div>
-                <label className="label">To Warehouse{needsTo ? ' *' : ''}</label>
-                <AsyncDropdown
-                  endpoint="/warehouses"
-                  labelField="warehouse_name"
-                  valueField="warehouse_id"
-                  value={form.to_warehouse_id}
-                  onChange={v => setForm(f => ({ ...f, to_warehouse_id: v }))}
-                  placeholder="Select warehouse..."
-                  required={needsTo}
-                  emptyHint="No warehouses found"
-                />
+            <div>
+              <label className="label">To Warehouse *</label>
+              <AsyncDropdown
+                endpoint="/warehouses"
+                labelField="warehouse_name"
+                valueField="warehouse_id"
+                value={form.to_warehouse_id}
+                onChange={v => setForm(f => ({ ...f, to_warehouse_id: v }))}
+                placeholder="Select warehouse..."
+                required
+                emptyHint="No warehouses found"
+              />
+            </div>
+            {form.from_warehouse_id && form.to_warehouse_id && form.from_warehouse_id === form.to_warehouse_id && (
+              <div style={{ gridColumn: '1 / -1', fontSize: '0.75rem', color: '#dc2626' }}>
+                From and To warehouse must be different.
               </div>
             )}
 

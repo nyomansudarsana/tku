@@ -11,7 +11,7 @@ class StockMovement(Base, AuditMixin):
     movement_date = Column(Date, nullable=False, index=True)
     product_id = Column(Integer, ForeignKey("products.product_id"), nullable=False)
     movement_type = Column(String(20), nullable=False)
-    quantity = Column(Float, default=0, nullable=False)
+    quantity = Column(Integer, default=0, nullable=False)
     from_warehouse_id = Column(Integer, ForeignKey("warehouses.warehouse_id"), nullable=True)
     to_warehouse_id = Column(Integer, ForeignKey("warehouses.warehouse_id"), nullable=True)
     remark = Column(Text, nullable=True)

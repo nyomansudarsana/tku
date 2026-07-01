@@ -7,6 +7,7 @@ const IMPORT_TYPES = [
   { value: 'categories', label: 'Categories', icon: '🗂️', description: 'Import product categories' },
   { value: 'products', label: 'Products', icon: '📦', description: 'Import product catalog (categories must exist first)' },
   { value: 'bank_accounts', label: 'Bank Accounts', icon: '🏦', description: 'Import bank account records' },
+  { value: 'receivings', label: 'Receivings', icon: '📥', description: 'Bulk-import goods received — suppliers and products must exist first' },
 ]
 
 function StatusBadge({ status, errorRows }) {
@@ -42,14 +43,17 @@ export default function BulkUpload() {
     } catch { /* silent */ }
   }
 
-  const handleDownloadTemplate = async () => {
+  const handleDownloadTemplate = async (format = 'csv') => {
     try {
-      const res = await bulkUploadAPI.getTemplate(importType)
-      const blob = new Blob([res.data], { type: 'text/csv' })
+      const res = await bulkUploadAPI.getTemplate(importType, format)
+      const mime = format === 'xlsx'
+        ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        : 'text/csv'
+      const blob = new Blob([res.data], { type: mime })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `template_${importType}.csv`
+      a.download = `template_${importType}.${format}`
       a.click()
       URL.revokeObjectURL(url)
     } catch {
@@ -130,9 +134,14 @@ export default function BulkUpload() {
             </button>
           ))}
         </div>
-        <button className="btn btn-secondary" onClick={handleDownloadTemplate}>
-          Download {selected?.label} Template (CSV)
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button className="btn btn-secondary" onClick={() => handleDownloadTemplate('csv')}>
+            Download {selected?.label} Template (CSV)
+          </button>
+          <button className="btn btn-secondary" onClick={() => handleDownloadTemplate('xlsx')}>
+            Download {selected?.label} Template (Excel)
+          </button>
+        </div>
       </div>
 
       {/* Step 2: Upload & Validate */}

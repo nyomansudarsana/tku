@@ -39,7 +39,23 @@ const emptyLine = () => ({
   unit:        'PCS',
   discount_pct:'0',
   available:   null,   // loaded from /products/{id}/available-stock
+  inventory_type: '',  // only needed when the product has stock in >1 ownership bucket
+  bucketOptions: null, // [{type, qty}] populated after a backend "ambiguous bucket" error
 })
+
+// Parses the backend's "has stock in more than one inventory type..." 400 error
+// into { productName, options: [{type, qty}] } so the cart line can render a picker.
+function parseBucketAmbiguity(detail) {
+  if (!detail) return null
+  const m = detail.match(/^'(.+)' has stock in more than one inventory type at this warehouse: (.+)\. Please specify/)
+  if (!m) return null
+  const [, productName, optsStr] = m
+  const options = optsStr.split(',').map(s => s.trim()).map(s => {
+    const om = s.match(/^(.+) \(([\d.]+)\)$/)
+    return om ? { type: om[1], qty: parseFloat(om[2]) } : null
+  }).filter(Boolean)
+  return { productName, options }
+}
 
 // ── Empty form factory ────────────────────────────────────────────────────────
 const emptyForm = () => ({
@@ -128,8 +144,8 @@ function CartLine({ line, idx, warehouseId, onUpdate, onRemove, canRemove }) {
         <input
           className="input"
           type="number"
-          min="0.01"
-          step="0.01"
+          min="1"
+          step="1"
           value={line.quantity}
           onChange={e => setField('quantity', e.target.value)}
           style={{ textAlign: 'right', borderColor: (!stockOk && hasProduct) ? '#ef4444' : undefined }}
@@ -138,6 +154,25 @@ function CartLine({ line, idx, warehouseId, onUpdate, onRemove, canRemove }) {
         {hasProduct && line.available !== null && !stockOk && (
           <div style={{ fontSize: '0.68rem', color: '#dc2626', marginTop: '0.15rem', textAlign: 'right' }}>
             Max: {line.available}
+          </div>
+        )}
+        {line.bucketOptions && (
+          <div style={{ marginTop: '0.3rem' }}>
+            <select
+              className="input"
+              style={{ fontSize: '0.72rem', padding: '0.25rem' }}
+              value={line.inventory_type}
+              onChange={e => setField('inventory_type', e.target.value)}
+              required
+            >
+              <option value="">Select type…</option>
+              {line.bucketOptions.map(o => (
+                <option key={o.type} value={o.type}>{o.type} ({o.qty})</option>
+              ))}
+            </select>
+            <div style={{ fontSize: '0.65rem', color: '#d97706', marginTop: '0.15rem' }}>
+              Multiple ownership types — pick one
+            </div>
           </div>
         )}
       </td>
@@ -410,12 +445,20 @@ export default function Sales() {
       return
     }
 
+    // If a prior submit flagged a multi-bucket product, require the picker to be resolved
+    const unresolvedBucket = validLines.find(l => l.bucketOptions && !l.inventory_type)
+    if (unresolvedBucket) {
+      setError(`Please select an Inventory Type for "${unresolvedBucket.product_name}".`)
+      return
+    }
+
     const details = validLines.map(l => ({
       product_id:  parseInt(l.product_id),
-      quantity:    parseFloat(l.quantity),
+      quantity:    parseInt(l.quantity),
       unit:        l.unit,
       unit_price:  parseFloat(l.unit_price),
       discount_pct: parseFloat(l.discount_pct) || 0,
+      ...(l.inventory_type ? { inventory_type: l.inventory_type } : {}),
     }))
 
     const payload = {
@@ -441,7 +484,21 @@ export default function Sales() {
       setModal(false)
       load()
     } catch (err) {
-      setError(err.response?.data?.detail || 'Failed to save sale. Please try again.')
+      const detail = err.response?.data?.detail
+      const ambiguity = parseBucketAmbiguity(detail)
+      if (ambiguity) {
+        setForm(prev => ({
+          ...prev,
+          lines: prev.lines.map(l =>
+            l.product_name === ambiguity.productName
+              ? { ...l, bucketOptions: ambiguity.options }
+              : l
+          ),
+        }))
+        setError(`"${ambiguity.productName}" has stock in more than one inventory type — select which one below.`)
+      } else {
+        setError(detail || 'Failed to save sale. Please try again.')
+      }
     } finally {
       setSaveLoading(false)
     }

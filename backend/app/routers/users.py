@@ -5,7 +5,7 @@ from datetime import datetime
 from ..database import get_db
 from ..models.user import User
 from ..schemas.user import UserCreate, UserUpdate, UserResponse, ResetPasswordRequest
-from ..services.auth import get_current_user, require_admin
+from ..services.permissions import require_permission
 from ..utils.security import get_password_hash
 
 router = APIRouter(prefix="/users", tags=["Users"])
@@ -15,8 +15,8 @@ router = APIRouter(prefix="/users", tags=["Users"])
 def list_users(
     search: Optional[str] = None,
     page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=100),
-    current_user: User = Depends(require_admin),
+    limit: int = Query(20, ge=1, le=2000),
+    current_user: User = Depends(require_permission("users.manage")),
     db: Session = Depends(get_db)
 ):
     q = db.query(User).filter(User.deleted_at.is_(None))
@@ -30,7 +30,7 @@ def list_users(
 @router.post("", response_model=UserResponse)
 def create_user(
     data: UserCreate,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_permission("users.manage")),
     db: Session = Depends(get_db)
 ):
     existing = db.query(User).filter(User.username == data.username, User.deleted_at.is_(None)).first()
@@ -52,7 +52,7 @@ def create_user(
 
 
 @router.get("/{user_id}", response_model=UserResponse)
-def get_user(user_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def get_user(user_id: int, current_user: User = Depends(require_permission("users.manage")), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.user_id == user_id, User.deleted_at.is_(None)).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -63,7 +63,7 @@ def get_user(user_id: int, current_user: User = Depends(get_current_user), db: S
 def update_user(
     user_id: int,
     data: UserUpdate,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_permission("users.manage")),
     db: Session = Depends(get_db)
 ):
     user = db.query(User).filter(User.user_id == user_id, User.deleted_at.is_(None)).first()
@@ -78,7 +78,7 @@ def update_user(
 
 
 @router.delete("/{user_id}")
-def delete_user(user_id: int, current_user: User = Depends(require_admin), db: Session = Depends(get_db)):
+def delete_user(user_id: int, current_user: User = Depends(require_permission("users.manage")), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.user_id == user_id, User.deleted_at.is_(None)).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -94,7 +94,7 @@ def delete_user(user_id: int, current_user: User = Depends(require_admin), db: S
 def reset_password(
     user_id: int,
     data: ResetPasswordRequest,
-    current_user: User = Depends(require_admin),
+    current_user: User = Depends(require_permission("users.manage")),
     db: Session = Depends(get_db)
 ):
     user = db.query(User).filter(User.user_id == user_id, User.deleted_at.is_(None)).first()

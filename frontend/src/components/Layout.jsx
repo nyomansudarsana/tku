@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
+import NotificationBell from './NotificationBell'
 
 // ── SVG icon components ──────────────────────────────────────────────────────
 const Icon = ({ d, size = 18, stroke = 'currentColor' }) => (
@@ -29,51 +30,65 @@ const ICONS = {
   stockOpname:     <><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></>,
   damagedStock:    <><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>,
   bulkUpload: <><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></>,
+  reports: <><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></>,
   users: <><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>,
+  roles: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></>,
   chevron: <polyline points="9 18 15 12 9 6" />,
   collapse: <polyline points="15 18 9 12 15 6" />,
   menu: <><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="18" x2="21" y2="18" /></>,
+  bell: <><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></>,
 }
 
 // ── Navigation config ────────────────────────────────────────────────────────
+// Each leaf item's `permission` key is checked against user.permissions
+// (from the login/me response) — see NavItem below. Parent groups auto-hide
+// when every child is hidden.
 const NAV = [
   { label: 'Dashboard', path: '/', iconKey: 'dashboard' },
   {
     label: 'Master Data', iconKey: 'masterData',
     children: [
-      { label: 'Suppliers', path: '/suppliers', iconKey: 'suppliers' },
-      { label: 'Categories', path: '/categories', iconKey: 'categories' },
-      { label: 'Products', path: '/products', iconKey: 'products' },
-      { label: 'Warehouses', path: '/warehouses', iconKey: 'warehouses' },
-      { label: 'Stores', path: '/stores', iconKey: 'stores' },
-      { label: 'Bank Accounts', path: '/bank-accounts', iconKey: 'bankAccounts' },
+      { label: 'Suppliers', path: '/suppliers', iconKey: 'suppliers', permission: 'master_data.suppliers' },
+      { label: 'Categories', path: '/categories', iconKey: 'categories', permission: 'master_data.categories' },
+      { label: 'Products', path: '/products', iconKey: 'products', permission: 'master_data.products' },
+      { label: 'Warehouses', path: '/warehouses', iconKey: 'warehouses', permission: 'master_data.warehouses' },
+      { label: 'Stores', path: '/stores', iconKey: 'stores', permission: 'master_data.stores' },
+      { label: 'Bank Accounts', path: '/bank-accounts', iconKey: 'bankAccounts', permission: 'master_data.bank_accounts' },
     ],
   },
   {
     label: 'Receiving', iconKey: 'receiving',
     children: [
-      { label: 'Receiving',        path: '/receiving',         iconKey: 'receiving' },
-      { label: 'Supplier Returns', path: '/supplier-returns',  iconKey: 'supplierReturns' },
+      { label: 'Receiving',        path: '/receiving',         iconKey: 'receiving', permission: 'receiving.view' },
+      { label: 'Supplier Returns', path: '/supplier-returns',  iconKey: 'supplierReturns', permission: 'supplier_returns.view' },
     ],
   },
   {
     label: 'Inventory', iconKey: 'inventory',
     children: [
-      { label: 'Inventory',      path: '/inventory',       iconKey: 'inventory' },
-      { label: 'Damaged Stock',  path: '/damaged-stock',   iconKey: 'damagedStock' },
-      { label: 'Stock Movement', path: '/stock-movement',  iconKey: 'movement' },
-      { label: 'Stock Opname',   path: '/stock-opname',    iconKey: 'stockOpname' },
+      { label: 'Inventory',      path: '/inventory',       iconKey: 'inventory', permission: 'inventory.view' },
+      { label: 'Damaged Stock',  path: '/damaged-stock',   iconKey: 'damagedStock', permission: 'damaged_stock.view' },
+      { label: 'Stock Movement', path: '/stock-movement',  iconKey: 'movement', permission: 'stock_movement.view' },
+      { label: 'Stock Opname',   path: '/stock-opname',    iconKey: 'stockOpname', permission: 'stock_opname.view' },
     ],
   },
   {
     label: 'Sales', iconKey: 'sales',
     children: [
-      { label: 'Sales', path: '/sales', iconKey: 'sales' },
-      { label: 'Sales Returns', path: '/sales-returns', iconKey: 'returns' },
+      { label: 'Sales', path: '/sales', iconKey: 'sales', permission: 'sales.view' },
+      { label: 'Sales Returns', path: '/sales-returns', iconKey: 'returns', permission: 'sales_returns.view' },
     ],
   },
-  { label: 'Bulk Upload', path: '/bulk-upload', iconKey: 'bulkUpload' },
-  { label: 'User Management', path: '/users', iconKey: 'users', adminOnly: true },
+  { label: 'Bulk Upload', path: '/bulk-upload', iconKey: 'bulkUpload', permission: 'bulk_upload.view' },
+  {
+    label: 'Reports', iconKey: 'reports',
+    children: [
+      { label: 'Inventory Report', path: '/reports/inventory', iconKey: 'inventory', permission: 'inventory.view' },
+      { label: 'Sales Report', path: '/reports/sales', iconKey: 'reports', permission: 'sales.view' },
+    ],
+  },
+  { label: 'User Management', path: '/users', iconKey: 'users', permission: 'users.manage' },
+  { label: 'Role Management', path: '/role-management', iconKey: 'roles', permission: 'roles.manage' },
 ]
 
 // ── Colours ──────────────────────────────────────────────────────────────────
@@ -92,23 +107,32 @@ const C = {
 }
 
 // ── Sidebar nav item ─────────────────────────────────────────────────────────
+// A key absent from user.permissions fails open (treated as visible) so a
+// stale frontend/backend pairing during rollout doesn't hide everything —
+// only an explicit false hides an item.
+const isVisible = (user, permission) => !permission || user?.permissions?.[permission] !== false
+
 function NavItem({ item, collapsed }) {
   const location = useLocation()
   const { user } = useAuth()
+  const visibleChildren = item.children?.filter(c => isVisible(user, c.permission)) ?? []
   const hasChildren = item.children?.length > 0
-  const childPaths = item.children?.map(c => c.path) ?? []
+  const childPaths = visibleChildren.map(c => c.path)
 
   const isActive = item.path
     ? location.pathname === item.path
     : childPaths.includes(location.pathname)
 
+  // Hooks must run unconditionally on every render — the visibility checks
+  // that can return null happen further below, after all hooks are called.
   const [open, setOpen] = useState(isActive)
 
   useEffect(() => {
     if (childPaths.includes(location.pathname)) setOpen(true)
   }, [location.pathname])
 
-  if (item.adminOnly && user?.role !== 'Admin') return null
+  if (!isVisible(user, item.permission)) return null
+  if (hasChildren && visibleChildren.length === 0) return null
 
   const iconEl = (
     <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '1.25rem', flexShrink: 0 }}>
@@ -166,13 +190,13 @@ function NavItem({ item, collapsed }) {
           <ul style={{
             listStyle: 'none',
             overflow: 'hidden',
-            maxHeight: open ? `${item.children.length * 3}rem` : '0',
+            maxHeight: open ? `${visibleChildren.length * 3}rem` : '0',
             opacity: open ? 1 : 0,
             transition: 'max-height 0.25s ease, opacity 0.2s ease',
             paddingLeft: '0.75rem',
             marginTop: open ? '0.25rem' : 0,
           }}>
-            {item.children.map(child => {
+            {visibleChildren.map(child => {
               const childActive = location.pathname === child.path
               return (
                 <li key={child.path} style={{ listStyle: 'none', marginBottom: '0.125rem' }}>
@@ -418,6 +442,9 @@ export default function Layout({ children }) {
             </nav>
           </div>
 
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <NotificationBell />
+
           {/* Profile dropdown */}
           <div style={{ position: 'relative' }}>
             <button
@@ -478,6 +505,7 @@ export default function Layout({ children }) {
                 </div>
               </>
             )}
+          </div>
           </div>
         </header>
 

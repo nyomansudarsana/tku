@@ -7,6 +7,7 @@ from ..models.category import Category
 from ..models.user import User
 from ..schemas.category import CategoryCreate, CategoryUpdate, CategoryResponse
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
 
 router = APIRouter(prefix="/categories", tags=["Categories"])
 
@@ -28,7 +29,7 @@ def list_categories(
 
 
 @router.post("", response_model=CategoryResponse)
-def create_category(data: CategoryCreate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_category(data: CategoryCreate, current_user: User = Depends(require_permission("master_data.categories")), db: Session = Depends(get_db)):
     cat = Category(**data.dict(), created_by=current_user.username)
     db.add(cat)
     db.commit()
@@ -45,7 +46,7 @@ def get_category(category_id: int, current_user: User = Depends(get_current_user
 
 
 @router.put("/{category_id}", response_model=CategoryResponse)
-def update_category(category_id: int, data: CategoryUpdate, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_category(category_id: int, data: CategoryUpdate, current_user: User = Depends(require_permission("master_data.categories")), db: Session = Depends(get_db)):
     cat = db.query(Category).filter(Category.category_id == category_id, Category.deleted_at.is_(None)).first()
     if not cat:
         raise HTTPException(status_code=404, detail="Category not found")
@@ -58,7 +59,7 @@ def update_category(category_id: int, data: CategoryUpdate, current_user: User =
 
 
 @router.delete("/{category_id}")
-def delete_category(category_id: int, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def delete_category(category_id: int, current_user: User = Depends(require_permission("master_data.categories")), db: Session = Depends(get_db)):
     cat = db.query(Category).filter(Category.category_id == category_id, Category.deleted_at.is_(None)).first()
     if not cat:
         raise HTTPException(status_code=404, detail="Category not found")

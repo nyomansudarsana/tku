@@ -18,9 +18,14 @@ from ..models.product import Product
 from ..models.warehouse import Warehouse
 from ..models.store import Store
 from ..models.bank_account import BankAccount
+from ..models.receiving import Receiving
+from ..models.supplier_return import SupplierReturn
 from ..models.bulk_import import BulkImportHistory, BulkImportError
 from ..schemas.bulk_import import BulkValidateResponse, BulkImportResponse, BulkImportErrorSchema
 from ..services.auth import get_current_user
+from ..services.permissions import require_permission
+from ..services.inventory_service import update_inventory_balance
+from ..constants import INVENTORY_TYPES, DEFAULT_INVENTORY_TYPE
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/bulk-upload", tags=["Bulk Upload"])
@@ -46,6 +51,18 @@ TEMPLATES = {
         "columns": ["bank_name", "account_number", "beneficiary_name", "is_active"],
         "required": ["bank_name", "account_number", "beneficiary_name"],
         "example": [{"bank_name": "BCA", "account_number": "1234567890", "beneficiary_name": "PT Kopernik", "is_active": "true"}],
+    },
+    "receivings": {
+        "columns": [
+            "received_date", "supplier_name", "product_name", "category", "warehouse_name",
+            "quantity_received", "quantity_rejected", "purchase_price", "inventory_type",
+        ],
+        "required": ["received_date", "supplier_name", "product_name", "quantity_received", "purchase_price"],
+        "example": [{
+            "received_date": "2026-07-01", "supplier_name": "Nazava", "product_name": "Nazava Filter S",
+            "category": "Water Filter", "warehouse_name": "Ubud Warehouse", "quantity_received": "100",
+            "quantity_rejected": "0", "purchase_price": "250000", "inventory_type": "TKU Product",
+        }],
     },
 }
 
@@ -136,6 +153,125 @@ def _validate_products(rows: list[dict], db: Session) -> tuple[list[dict], list[
     return valid, errors
 
 
+def _validate_receivings(rows: list[dict], db: Session) -> tuple[list[dict], list[dict]]:
+    valid, errors = [], []
+    suppliers = {s.supplier_name: s.supplier_id for s in db.query(Supplier).filter(Supplier.deleted_at.is_(None)).all()}
+    warehouses = {w.warehouse_name: w.warehouse_id for w in db.query(Warehouse).filter(Warehouse.deleted_at.is_(None)).all()}
+    products = db.query(Product).filter(Product.deleted_at.is_(None)).all()
+    products_by_name = {}
+    for p in products:
+        products_by_name.setdefault(p.product_name, []).append(p)
+
+    for i, row in enumerate(rows, 1):
+        errs = []
+        received_date_str = row.get("received_date", "").strip()
+        supplier_name = row.get("supplier_name", "").strip()
+        product_name = row.get("product_name", "").strip()
+        category_name = row.get("category", "").strip()
+        warehouse_name = row.get("warehouse_name", "").strip()
+        qty_received_str = row.get("quantity_received", "").strip()
+        qty_rejected_str = row.get("quantity_rejected", "").strip() or "0"
+        purchase_price_str = row.get("purchase_price", "").strip()
+        inventory_type = row.get("inventory_type", "").strip() or DEFAULT_INVENTORY_TYPE
+
+        received_date = None
+        if not received_date_str:
+            errs.append("'received_date' is required")
+        else:
+            try:
+                received_date = date.fromisoformat(received_date_str)
+            except ValueError:
+                errs.append(f"'received_date' must be YYYY-MM-DD, got '{received_date_str}'")
+
+        supplier_id = suppliers.get(supplier_name)
+        if not supplier_name:
+            errs.append("'supplier_name' is required")
+        elif supplier_id is None:
+            errs.append(f"Supplier '{supplier_name}' not found — create it first")
+
+        product = None
+        if not product_name:
+            errs.append("'product_name' is required")
+        else:
+            candidates = products_by_name.get(product_name, [])
+            if not candidates:
+                errs.append(f"Product '{product_name}' not found — create it first")
+            elif supplier_id is not None:
+                # Products carry a primary supplier_id — the product must belong to
+                # the given supplier, mirroring the same rule enforced when
+                # creating a receiving manually (see routers/receiving.py).
+                matching = [p for p in candidates if p.supplier_id == supplier_id]
+                if not matching:
+                    errs.append(f"Product '{product_name}' is not assigned to supplier '{supplier_name}'")
+                else:
+                    product = matching[0]
+            else:
+                product = candidates[0]
+
+        if product and category_name:
+            actual_category = product.category.category_name if product.category else None
+            if actual_category != category_name:
+                errs.append(f"Product '{product_name}' belongs to category '{actual_category or 'none'}', not '{category_name}'")
+
+        warehouse_id = None
+        if warehouse_name:
+            warehouse_id = warehouses.get(warehouse_name)
+            if warehouse_id is None:
+                errs.append(f"Warehouse '{warehouse_name}' not found")
+
+        qty_received = None
+        if not qty_received_str:
+            errs.append("'quantity_received' is required")
+        else:
+            try:
+                qty_received = int(float(qty_received_str))
+                if qty_received <= 0:
+                    errs.append("'quantity_received' must be greater than 0")
+            except ValueError:
+                errs.append(f"'quantity_received' must be a whole number, got '{qty_received_str}'")
+
+        qty_rejected = 0
+        try:
+            qty_rejected = int(float(qty_rejected_str))
+            if qty_rejected < 0:
+                errs.append("'quantity_rejected' cannot be negative")
+        except ValueError:
+            errs.append(f"'quantity_rejected' must be a whole number, got '{qty_rejected_str}'")
+
+        if qty_received is not None and qty_rejected > qty_received:
+            errs.append(f"'quantity_rejected' ({qty_rejected}) cannot exceed 'quantity_received' ({qty_received})")
+
+        purchase_price = None
+        if not purchase_price_str:
+            errs.append("'purchase_price' is required")
+        else:
+            try:
+                purchase_price = float(purchase_price_str)
+                if purchase_price < 0:
+                    errs.append("'purchase_price' cannot be negative")
+            except ValueError:
+                errs.append(f"'purchase_price' must be a number, got '{purchase_price_str}'")
+
+        if inventory_type not in INVENTORY_TYPES:
+            errs.append(f"'inventory_type' must be one of: {', '.join(INVENTORY_TYPES)} — got '{inventory_type}'")
+
+        if errs:
+            errors.append({"row_number": i, "error_message": "; ".join(errs), "raw_data": json.dumps(row)})
+        else:
+            enriched = dict(row)
+            enriched["_received_date"] = received_date
+            enriched["_supplier_id"] = supplier_id
+            enriched["_product_id"] = product.product_id
+            enriched["_warehouse_id"] = warehouse_id
+            enriched["_quantity_received"] = qty_received
+            enriched["_quantity_rejected"] = qty_rejected
+            enriched["_quantity_accepted"] = max(0, qty_received - qty_rejected)
+            enriched["_purchase_price"] = purchase_price
+            enriched["_inventory_type"] = inventory_type
+            valid.append({"row": i, "data": enriched})
+    return valid, errors
+
+
 def _validate_bank_accounts(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     valid, errors = [], []
     required = ["bank_name", "account_number", "beneficiary_name"]
@@ -216,6 +352,67 @@ def _import_products(valid_rows: list[dict], db: Session, username: str) -> tupl
     return success, errors
 
 
+def _import_receivings(valid_rows: list[dict], db: Session, username: str) -> tuple[int, list[dict]]:
+    """
+    Mirrors routers/receiving.py::create_receiving — accepted qty updates
+    inventory (with cost/bucket), and a Supplier Return auto-creates for any
+    rejected qty. Kept as inline ORM logic (not a call into the router) to
+    match this file's existing per-type import function pattern.
+    """
+    success, errors = 0, []
+    for item in valid_rows:
+        try:
+            row = item["data"]
+            receiving = Receiving(
+                received_date=row["_received_date"],
+                supplier_id=row["_supplier_id"],
+                product_id=row["_product_id"],
+                warehouse_id=row["_warehouse_id"],
+                quantity_received=row["_quantity_received"],
+                quantity_accepted=row["_quantity_accepted"],
+                quantity_rejected=row["_quantity_rejected"],
+                unit="PCS",
+                purchase_price=row["_purchase_price"],
+                inventory_type=row["_inventory_type"],
+                created_by=username,
+            )
+            db.add(receiving)
+            db.flush()
+
+            if receiving.warehouse_id and receiving.quantity_accepted > 0:
+                update_inventory_balance(
+                    db,
+                    product_id=receiving.product_id,
+                    warehouse_id=receiving.warehouse_id,
+                    qty_in=receiving.quantity_accepted,
+                    qty_out=0,
+                    transaction_type="RECEIVING",
+                    reference_no=f"RCV-{receiving.receiving_id}",
+                    inventory_type=receiving.inventory_type,
+                    unit_cost_override=receiving.purchase_price,
+                    created_by=username,
+                )
+
+            if receiving.quantity_rejected > 0 and receiving.supplier_id:
+                db.add(SupplierReturn(
+                    receiving_id=receiving.receiving_id,
+                    supplier_id=receiving.supplier_id,
+                    product_id=receiving.product_id,
+                    warehouse_id=receiving.warehouse_id,
+                    return_date=receiving.received_date,
+                    quantity=receiving.quantity_rejected,
+                    reason="Rejected at receiving",
+                    status="Pending",
+                    inventory_type=receiving.inventory_type,
+                    created_by=username,
+                ))
+
+            success += 1
+        except Exception as exc:
+            errors.append({"row_number": item["row"], "error_message": str(exc), "raw_data": json.dumps(item["data"])})
+    return success, errors
+
+
 def _import_bank_accounts(valid_rows: list[dict], db: Session, username: str) -> tuple[int, list[dict]]:
     success, errors = 0, []
     for item in valid_rows:
@@ -243,14 +440,37 @@ def _import_bank_accounts(valid_rows: list[dict], db: Session, username: str) ->
 @router.get("/templates/{import_type}")
 def get_template(
     import_type: str,
-    current_user: User = Depends(get_current_user),
+    format: str = "csv",
+    current_user: User = Depends(require_permission("bulk_upload.view")),
 ):
-    """Return CSV template columns and example row for the given import type."""
+    """Return a CSV or XLSX template (columns + example row) for the given import type."""
     if import_type not in TEMPLATES:
         raise HTTPException(status_code=404, detail=f"Unknown import type. Supported: {', '.join(SUPPORTED_TYPES)}")
+    if format not in ("csv", "xlsx"):
+        raise HTTPException(status_code=400, detail="format must be 'csv' or 'xlsx'")
     tmpl = TEMPLATES[import_type]
-    # Build CSV string
     cols = tmpl["columns"]
+
+    if format == "xlsx":
+        try:
+            from openpyxl import Workbook
+        except ImportError:
+            raise HTTPException(status_code=422, detail="XLSX templates require openpyxl to be installed on the server.")
+        from fastapi.responses import Response
+        wb = Workbook()
+        ws = wb.active
+        ws.title = import_type[:31]
+        ws.append(cols)
+        for example_row in tmpl["example"]:
+            ws.append([example_row.get(c, "") for c in cols])
+        buf = io.BytesIO()
+        wb.save(buf)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="template_{import_type}.xlsx"'},
+        )
+
     lines = [",".join(cols)]
     for example_row in tmpl["example"]:
         lines.append(",".join(str(example_row.get(c, "")) for c in cols))
@@ -267,7 +487,7 @@ def get_template(
 async def validate_file(
     import_type: str,
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("bulk_upload.view")),
     db: Session = Depends(get_db),
 ):
     """Parse and validate an uploaded file. Returns preview without importing."""
@@ -291,6 +511,7 @@ async def validate_file(
         "categories": lambda r: _validate_categories(r),
         "products": lambda r: _validate_products(r, db),
         "bank_accounts": lambda r: _validate_bank_accounts(r),
+        "receivings": lambda r: _validate_receivings(r, db),
     }
     valid_rows, error_list = dispatch[import_type](rows)
 
@@ -310,7 +531,7 @@ async def validate_file(
 async def import_file(
     import_type: str,
     file: UploadFile = File(...),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("bulk_upload.view")),
     db: Session = Depends(get_db),
 ):
     """Parse, validate, and import an uploaded file into the database."""
@@ -334,12 +555,14 @@ async def import_file(
         "categories": lambda r: _validate_categories(r),
         "products": lambda r: _validate_products(r, db),
         "bank_accounts": lambda r: _validate_bank_accounts(r),
+        "receivings": lambda r: _validate_receivings(r, db),
     }
     dispatch_import = {
         "suppliers": lambda v: _import_suppliers(v, db, current_user.username),
         "categories": lambda v: _import_categories(v, db, current_user.username),
         "products": lambda v: _import_products(v, db, current_user.username),
         "bank_accounts": lambda v: _import_bank_accounts(v, db, current_user.username),
+        "receivings": lambda v: _import_receivings(v, db, current_user.username),
     }
 
     valid_rows, validation_errors = dispatch_validate[import_type](rows)
@@ -387,7 +610,7 @@ def import_history(
     import_type: Optional[str] = None,
     page: int = 1,
     limit: int = 20,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("bulk_upload.view")),
     db: Session = Depends(get_db),
 ):
     q = db.query(BulkImportHistory)
