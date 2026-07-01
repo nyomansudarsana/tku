@@ -170,6 +170,13 @@ export const reportsAPI = {
   salesXlsx:     (params = {}) => api.get('/reports/sales', { params: { ...params, format: 'xlsx' }, responseType: 'blob' }),
 }
 
+export const adminAPI = {
+  listBackups:       () => api.get('/admin/backups'),
+  createBackup:      () => api.post('/admin/backup'),
+  resetTransactions: (confirmPhrase) => api.post('/admin/reset-transactions', { confirm_phrase: confirmPhrase }),
+  loadDemoData:      () => api.post('/admin/load-demo-data'),
+}
+
 export const dashboardAPI = {
   salesSummary:           (params) => api.get('/dashboard/sales-summary', { params }),
   topProducts:            (params) => api.get('/dashboard/top-products', { params }),

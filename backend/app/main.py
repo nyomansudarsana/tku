@@ -19,6 +19,7 @@ from .routers import supplier_returns, stock_opnames, damaged_stocks
 from .routers import permissions as permissions_router
 from .routers import notifications
 from .routers import reports
+from .routers import admin
 from .services.permissions import seed_permission_catalog
 # Ensure SalesDetail model is registered with SQLAlchemy before create_all()
 from .models import sales_detail as _sales_detail_model  # noqa: F401
@@ -96,6 +97,7 @@ app.include_router(bulk_upload.router,       prefix="/api/v1")
 app.include_router(permissions_router.router, prefix="/api/v1")
 app.include_router(notifications.router,     prefix="/api/v1")
 app.include_router(reports.router,           prefix="/api/v1")
+app.include_router(admin.router,             prefix="/api/v1")
 
 
 @app.get("/")

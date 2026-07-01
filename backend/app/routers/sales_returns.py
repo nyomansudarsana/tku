@@ -8,6 +8,7 @@ from ..models.sales_return import SalesReturn
 from ..models.sales import Sales
 from ..models.sales_detail import SalesDetail
 from ..models.inventory import Inventory
+from ..models.inventory_ledger import InventoryLedger
 from ..models.product import Product
 from ..models.damaged_stock import DamagedStock
 from ..models.user import User
@@ -30,6 +31,84 @@ def load_return(db, return_id):
         joinedload(SalesReturn.product),
         joinedload(SalesReturn.warehouse),
     ).filter(SalesReturn.return_id == return_id, SalesReturn.deleted_at.is_(None)).first()
+
+
+def _sales_return_posted(ret: SalesReturn) -> bool:
+    """True when this return already restocked sellable inventory (Approved + Good condition)."""
+    return ret.status == "Approved" and ret.condition == "Good" and bool(ret.warehouse_id)
+
+
+def _reverse_sales_return_effect(db: Session, ret: SalesReturn) -> None:
+    """
+    Undo a previously-posted return's effect, using the return's CURRENT
+    (pre-edit) field values — call this BEFORE applying any field changes.
+
+    - "Good" condition: reverses the restock (qty_in) added to Inventory,
+      subject to the same "still the latest ledger entry for this bucket"
+      safety check used throughout receiving.py/sales.py — if anything else
+      has touched this product/warehouse/inventory-type bucket since, refuse
+      rather than retroactively corrupt a cost basis later transactions
+      already relied on.
+    - Defective/Damaged/Incomplete: never touched Inventory directly (those
+      units were routed to DamagedStock instead), so there's nothing to
+      reverse there — but the auto-created DamagedStock record referencing
+      this return would otherwise become an orphan, so it's soft-deleted too.
+    """
+    ref = f"RTN-{ret.return_id}"
+
+    if ret.status == "Approved" and ret.condition in ("Defective", "Damaged", "Incomplete"):
+        damage = db.query(DamagedStock).filter(
+            DamagedStock.source == "Customer Return",
+            DamagedStock.source_reference == ref,
+            DamagedStock.deleted_at.is_(None),
+        ).first()
+        if damage:
+            damage.deleted_at = datetime.utcnow()
+            damage.deleted_by = "system:sales_return_reversal"
+        return
+
+    if not _sales_return_posted(ret):
+        return
+
+    inv_type = ret.inventory_type or DEFAULT_INVENTORY_TYPE
+    ledger_entry = db.query(InventoryLedger).filter(
+        InventoryLedger.reference_no == ref,
+        InventoryLedger.transaction_type == "RETURN_GOOD",
+        InventoryLedger.product_id == ret.product_id,
+        InventoryLedger.warehouse_id == ret.warehouse_id,
+        InventoryLedger.inventory_type == inv_type,
+    ).order_by(InventoryLedger.ledger_id.desc()).first()
+    if not ledger_entry:
+        return
+
+    latest_for_bucket = db.query(InventoryLedger).filter(
+        InventoryLedger.product_id == ret.product_id,
+        InventoryLedger.warehouse_id == ret.warehouse_id,
+        InventoryLedger.inventory_type == inv_type,
+    ).order_by(InventoryLedger.ledger_id.desc()).first()
+
+    if latest_for_bucket.ledger_id != ledger_entry.ledger_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This sales return can no longer be deleted because other stock "
+                "transactions (a sale, transfer, or stock opname) have happened to "
+                "this product/warehouse/inventory-type since it was approved. "
+                "Create a correcting Stock Opname instead."
+            ),
+        )
+
+    inventory = db.query(Inventory).filter(
+        Inventory.product_id == ret.product_id,
+        Inventory.warehouse_id == ret.warehouse_id,
+        Inventory.inventory_type == inv_type,
+        Inventory.deleted_at.is_(None),
+    ).first()
+    if inventory:
+        inventory.quantity = max(0, inventory.quantity - ret.quantity)
+
+    db.delete(ledger_entry)
+    db.flush()
 
 
 @router.get("", response_model=dict)
@@ -235,12 +314,20 @@ def delete_return(
     current_user: User = Depends(require_permission("sales_returns.view")),
     db: Session = Depends(get_db)
 ):
+    """
+    Deleting a return that already restocked inventory (Approved + Good) or
+    spawned a DamagedStock record (Approved + Defective/Damaged/Incomplete)
+    must undo that effect (same safety rule as receiving/sales — see
+    _reverse_sales_return_effect), or stock/records it contributed would
+    remain with no Sales Return left to explain where they came from.
+    """
     ret = db.query(SalesReturn).filter(
         SalesReturn.return_id == return_id,
         SalesReturn.deleted_at.is_(None)
     ).first()
     if not ret:
         raise HTTPException(status_code=404, detail="Return not found")
+    _reverse_sales_return_effect(db, ret)  # raises 400 if unsafe; no-op if never posted
     ret.deleted_at = datetime.utcnow()
     ret.deleted_by = current_user.username
     db.commit()

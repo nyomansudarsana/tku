@@ -23,10 +23,12 @@ import DamagedStock from './pages/DamagedStock'
 import RoleManagement from './pages/RoleManagement'
 import InventoryReport from './pages/InventoryReport'
 import SalesReport from './pages/SalesReport'
+import DatabaseTools from './pages/DatabaseTools'
 
-function ProtectedRoute({ children, permission }) {
+function ProtectedRoute({ children, permission, adminOnly }) {
   const { user } = useAuth()
   if (!user) return <Navigate to="/login" replace />
+  if (adminOnly && user.role !== 'Admin') return <Navigate to="/" replace />
   // Fail-open when the key is simply absent (stale frontend/backend during
   // rollout) — only an explicit false blocks access.
   if (permission && user.permissions?.[permission] === false) return <Navigate to="/" replace />
@@ -59,6 +61,7 @@ function App() {
           <Route path="/reports/sales" element={<ProtectedRoute permission="sales.view"><SalesReport /></ProtectedRoute>} />
           <Route path="/users" element={<ProtectedRoute permission="users.manage"><Users /></ProtectedRoute>} />
           <Route path="/role-management" element={<ProtectedRoute permission="roles.manage"><RoleManagement /></ProtectedRoute>} />
+          <Route path="/database-tools" element={<ProtectedRoute adminOnly><DatabaseTools /></ProtectedRoute>} />
           <Route path="/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

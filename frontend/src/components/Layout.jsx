@@ -33,6 +33,7 @@ const ICONS = {
   reports: <><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></>,
   users: <><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>,
   roles: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></>,
+  databaseTools: <><ellipse cx="12" cy="5" rx="9" ry="3" /><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" /><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" /></>,
   chevron: <polyline points="9 18 15 12 9 6" />,
   collapse: <polyline points="15 18 9 12 15 6" />,
   menu: <><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="18" x2="21" y2="18" /></>,
@@ -89,6 +90,7 @@ const NAV = [
   },
   { label: 'User Management', path: '/users', iconKey: 'users', permission: 'users.manage' },
   { label: 'Role Management', path: '/role-management', iconKey: 'roles', permission: 'roles.manage' },
+  { label: 'Database Tools', path: '/database-tools', iconKey: 'databaseTools', adminOnly: true },
 ]
 
 // ── Colours ──────────────────────────────────────────────────────────────────
@@ -110,12 +112,16 @@ const C = {
 // A key absent from user.permissions fails open (treated as visible) so a
 // stale frontend/backend pairing during rollout doesn't hide everything —
 // only an explicit false hides an item.
-const isVisible = (user, permission) => !permission || user?.permissions?.[permission] !== false
+const isVisible = (user, item) => {
+  if (!item) return true
+  if (item.adminOnly && user?.role !== 'Admin') return false
+  return !item.permission || user?.permissions?.[item.permission] !== false
+}
 
 function NavItem({ item, collapsed }) {
   const location = useLocation()
   const { user } = useAuth()
-  const visibleChildren = item.children?.filter(c => isVisible(user, c.permission)) ?? []
+  const visibleChildren = item.children?.filter(c => isVisible(user, c)) ?? []
   const hasChildren = item.children?.length > 0
   const childPaths = visibleChildren.map(c => c.path)
 
@@ -131,7 +137,7 @@ function NavItem({ item, collapsed }) {
     if (childPaths.includes(location.pathname)) setOpen(true)
   }, [location.pathname])
 
-  if (!isVisible(user, item.permission)) return null
+  if (!isVisible(user, item)) return null
   if (hasChildren && visibleChildren.length === 0) return null
 
   const iconEl = (

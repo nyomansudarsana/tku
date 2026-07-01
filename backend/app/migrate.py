@@ -754,6 +754,30 @@ def _migrate_inventory_buckets_v1(c) -> None:
     #    bucket, falling back to 'TKU Product' where no match exists (e.g.
     #    pure historical records with no corresponding Inventory row). ────────
     if _table_exists(c, "inventories"):
+        if _table_exists(c, "inventory_ledger"):
+            # inventory_ledger was added to the column-add loop above but was
+            # missed from this backfill pass originally — legacy rows stayed
+            # NULL, which silently broke the per-bucket running `balance`
+            # chain (a NULL != 'TKU Product' comparison means the "last
+            # ledger for this bucket" lookup in update_inventory_balance()
+            # can't find pre-Phase-1 entries, so balance restarts from 0
+            # instead of continuing). balance itself is a display/audit
+            # convenience, not the source of truth for stock (Inventory.
+            # quantity is), so this didn't corrupt actual stock levels, but
+            # it does need fixing for the ledger to be trustworthy and for
+            # any logic that inspects ledger continuity (e.g. determining
+            # whether a receiving is still safe to edit).
+            c.execute("""
+                UPDATE inventory_ledger
+                SET inventory_type = (
+                    SELECT i.inventory_type FROM inventories i
+                    WHERE i.product_id = inventory_ledger.product_id
+                      AND i.warehouse_id = inventory_ledger.warehouse_id
+                      AND i.deleted_at IS NULL
+                    LIMIT 1
+                )
+                WHERE inventory_type IS NULL
+            """)
         if _table_exists(c, "damaged_stocks"):
             c.execute("""
                 UPDATE damaged_stocks
@@ -819,9 +843,47 @@ def _migrate_inventory_buckets_v1(c) -> None:
 
     # Anything still unmatched (no corresponding Inventory row found) falls
     # back to the default bucket rather than staying NULL.
-    for table in ("damaged_stocks", "supplier_returns", "sales_returns", "sales_details", "stock_opname_details"):
+    for table in ("inventory_ledger", "damaged_stocks", "supplier_returns", "sales_returns", "sales_details", "stock_opname_details"):
         if _table_exists(c, table):
             c.execute(f"UPDATE {table} SET inventory_type = 'TKU Product' WHERE inventory_type IS NULL")
+
+    # ── Repair running balance/total_value now that inventory_type is fixed ──
+    # Legacy rows with inventory_type = NULL silently broke the "last ledger
+    # for this bucket" lookup in update_inventory_balance() (NULL never equals
+    # a non-null bucket string), so the running `balance` restarted from 0
+    # partway through some buckets' real history instead of continuing. This
+    # never corrupted actual stock (Inventory.quantity is the source of truth,
+    # computed independently) — only the ledger's own display of a running
+    # total was wrong. Ledger rows are an append-only log and ledger_id order
+    # is chronological, so balance/total_value can be safely recomputed from
+    # the authoritative qty_in/qty_out/unit_cost sequence; nothing else is
+    # touched.
+    if _table_exists(c, "inventory_ledger"):
+        c.execute("SELECT DISTINCT product_id, warehouse_id, inventory_type FROM inventory_ledger")
+        buckets = c.fetchall()
+        fixed_rows = 0
+        for product_id, warehouse_id, inv_type in buckets:
+            c.execute("""
+                SELECT ledger_id, qty_in, qty_out, unit_cost, balance FROM inventory_ledger
+                WHERE product_id = ? AND warehouse_id = ? AND inventory_type = ?
+                ORDER BY ledger_id
+            """, (product_id, warehouse_id, inv_type))
+            running = 0
+            for ledger_id, qty_in, qty_out, unit_cost, old_balance in c.fetchall():
+                running = running + (qty_in or 0) - (qty_out or 0)
+                new_total_value = running * unit_cost if unit_cost is not None else None
+                if old_balance != running:
+                    c.execute(
+                        "UPDATE inventory_ledger SET balance = ?, total_value = ? WHERE ledger_id = ?",
+                        (running, new_total_value, ledger_id),
+                    )
+                    fixed_rows += 1
+        if fixed_rows:
+            logger.warning(
+                "inventory_ledger: repaired running balance/total_value for %d row(s) "
+                "whose bucket chain was broken by the inventory_type NULL gap",
+                fixed_rows,
+            )
 
 
 def _migrate_stock_opname_incomplete_v1(c) -> None:

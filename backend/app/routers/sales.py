@@ -8,6 +8,7 @@ from ..database import get_db
 from ..models.sales import Sales
 from ..models.sales_detail import SalesDetail
 from ..models.inventory import Inventory
+from ..models.inventory_ledger import InventoryLedger
 from ..models.product import Product
 from ..models.bank_account import BankAccount
 from ..models.user import User
@@ -134,6 +135,67 @@ def _resolve_sale_bucket(
             ),
         )
     return resolved_type
+
+
+# ── Deletion reversal ──────────────────────────────────────────────────────────
+
+def _reverse_sale_effect(db: Session, sale: Sales) -> None:
+    """
+    Restore inventory for every line of a sale being deleted. Sales never
+    touch avg_cost (only RECEIVING does), so this is just "add the quantity
+    back" — no weighted-average unwinding needed, unlike Receiving's reversal.
+
+    Same safety principle as receivings.py::_reverse_receiving_effect: only
+    safe when each line's SALE ledger entry is still the most recent entry
+    for its bucket (nothing — another sale, a transfer, an opname — has
+    consumed further stock from that bucket since). Refuses per-line with a
+    clear error rather than silently restoring stock into a bucket whose
+    state has already moved on.
+    """
+    if not sale.warehouse_id:
+        return
+    ref = f"SALE-{sale.sales_id}"
+    for detail in sale.details:
+        inv_type = detail.inventory_type or DEFAULT_INVENTORY_TYPE
+        ledger_entry = db.query(InventoryLedger).filter(
+            InventoryLedger.reference_no == ref,
+            InventoryLedger.transaction_type == "SALE",
+            InventoryLedger.product_id == detail.product_id,
+            InventoryLedger.warehouse_id == sale.warehouse_id,
+            InventoryLedger.inventory_type == inv_type,
+        ).order_by(InventoryLedger.ledger_id.desc()).first()
+        if not ledger_entry:
+            continue  # this line's deduction was never recorded — nothing to undo
+
+        latest_for_bucket = db.query(InventoryLedger).filter(
+            InventoryLedger.product_id == detail.product_id,
+            InventoryLedger.warehouse_id == sale.warehouse_id,
+            InventoryLedger.inventory_type == inv_type,
+        ).order_by(InventoryLedger.ledger_id.desc()).first()
+
+        if latest_for_bucket.ledger_id != ledger_entry.ledger_id:
+            product = db.query(Product).filter(Product.product_id == detail.product_id).first()
+            label = product.product_name if product else f"#{detail.product_id}"
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cannot delete this sale: '{label}' has had other stock activity "
+                    "(another sale, transfer, or stock opname) since this sale was made. "
+                    "Deleting it now would restore stock into a bucket whose count has "
+                    "already moved on. Use a Stock Opname adjustment instead."
+                ),
+            )
+
+        inventory = db.query(Inventory).filter(
+            Inventory.product_id == detail.product_id,
+            Inventory.warehouse_id == sale.warehouse_id,
+            Inventory.inventory_type == inv_type,
+            Inventory.deleted_at.is_(None),
+        ).first()
+        if inventory:
+            inventory.quantity += detail.quantity
+        db.delete(ledger_entry)
+    db.flush()
 
 
 # ── Eager-load helper ─────────────────────────────────────────────────────────
@@ -490,11 +552,16 @@ def delete_sale(
     current_user: User    = Depends(require_permission("sales.view")),
     db:           Session = Depends(get_db),
 ):
-    sale = db.query(Sales).filter(
-        Sales.sales_id == sales_id, Sales.deleted_at.is_(None)
-    ).first()
+    """
+    Deleting a sale must also restore the inventory it deducted — a plain
+    soft-delete would leave stock permanently short by the deleted sale's
+    quantity with no surviving record explaining why. See _reverse_sale_effect
+    for why this is refused (per line) when unsafe.
+    """
+    sale = _load_sale(db, sales_id)
     if not sale:
         raise HTTPException(status_code=404, detail="Sale not found")
+    _reverse_sale_effect(db, sale)  # raises 400 if unsafe
     sale.deleted_at = datetime.utcnow()
     sale.deleted_by = current_user.username
     db.commit()

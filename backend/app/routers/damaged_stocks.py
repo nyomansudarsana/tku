@@ -6,6 +6,7 @@ from datetime import datetime, date
 from ..database import get_db
 from ..models.damaged_stock import DamagedStock
 from ..models.inventory import Inventory
+from ..models.inventory_ledger import InventoryLedger
 from ..models.user import User
 from ..schemas.damaged_stock import DamagedStockCreate, DamagedStockUpdate, DamagedStockResponse
 from ..services.auth import get_current_user
@@ -23,6 +24,12 @@ DAMAGE_REASONS = [
     "Opname Variance - Damaged", "Other",
 ]
 
+# Records auto-created by Stock Opname / Sales Return approval already had
+# their inventory effect (if any) posted by THAT flow, not this router — so
+# they never post/reverse their own deduction here.
+_AUTO_SOURCES = {"Stock Opname", "Customer Return"}
+_INVENTORY_AFFECTING_FIELDS = {"product_id", "warehouse_id", "inventory_type", "quantity", "source"}
+
 
 def _load(db, damaged_stock_id: int):
     return db.query(DamagedStock).options(
@@ -32,6 +39,90 @@ def _load(db, damaged_stock_id: int):
         DamagedStock.damaged_stock_id == damaged_stock_id,
         DamagedStock.deleted_at.is_(None),
     ).first()
+
+
+def _is_posted(record: DamagedStock) -> bool:
+    """True when this record posted its own inventory deduction — i.e. a
+    manually-entered damaged-stock record (source not Stock Opname/Customer
+    Return) with a warehouse set."""
+    return bool(record.warehouse_id) and record.source not in _AUTO_SOURCES
+
+
+def _reverse_damaged_stock_effect(db: Session, record: DamagedStock) -> None:
+    """
+    Undo a previously-posted manual damaged-stock deduction, using the
+    record's CURRENT (pre-edit) field values — call this BEFORE applying any
+    field changes. Same "still the latest ledger entry for this bucket"
+    safety check as receiving.py/sales.py/supplier_returns.py/sales_returns.py
+    — refuse rather than retroactively corrupt a cost basis later
+    transactions already relied on.
+    """
+    if not _is_posted(record):
+        return
+
+    ref = f"DMG-{record.damaged_stock_id}"
+    inv_type = record.inventory_type or DEFAULT_INVENTORY_TYPE
+    ledger_entry = db.query(InventoryLedger).filter(
+        InventoryLedger.reference_no == ref,
+        InventoryLedger.transaction_type == "DAMAGED",
+        InventoryLedger.product_id == record.product_id,
+        InventoryLedger.warehouse_id == record.warehouse_id,
+        InventoryLedger.inventory_type == inv_type,
+    ).order_by(InventoryLedger.ledger_id.desc()).first()
+    if not ledger_entry:
+        return
+
+    latest_for_bucket = db.query(InventoryLedger).filter(
+        InventoryLedger.product_id == record.product_id,
+        InventoryLedger.warehouse_id == record.warehouse_id,
+        InventoryLedger.inventory_type == inv_type,
+    ).order_by(InventoryLedger.ledger_id.desc()).first()
+
+    if latest_for_bucket.ledger_id != ledger_entry.ledger_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "This damaged stock record can no longer be edited or deleted because "
+                "other stock transactions (a sale, transfer, or stock opname) have "
+                "happened to this product/warehouse/inventory-type since it was "
+                "recorded. Create a correcting Stock Opname instead."
+            ),
+        )
+
+    inventory = db.query(Inventory).filter(
+        Inventory.product_id == record.product_id,
+        Inventory.warehouse_id == record.warehouse_id,
+        Inventory.inventory_type == inv_type,
+        Inventory.deleted_at.is_(None),
+    ).first()
+    if inventory:
+        inventory.quantity += record.quantity
+
+    db.delete(ledger_entry)
+    db.flush()
+
+
+def _apply_damaged_stock_effect(db: Session, record: DamagedStock, created_by: str) -> None:
+    if not _is_posted(record):
+        return
+    try:
+        update_inventory_balance(
+            db,
+            product_id       = record.product_id,
+            warehouse_id     = record.warehouse_id,
+            qty_in           = 0,
+            qty_out          = record.quantity,
+            transaction_type = "DAMAGED",
+            reference_no     = f"DMG-{record.damaged_stock_id}",
+            inventory_type   = record.inventory_type or DEFAULT_INVENTORY_TYPE,
+            created_by       = created_by,
+        )
+        logger.info(
+            "damaged_stock %s: deducted %d units of product %s from inventory",
+            record.damaged_stock_id, record.quantity, record.product_id,
+        )
+    except Exception as exc:
+        logger.warning("Inventory deduction failed for damaged_stock: %s", exc)
 
 
 @router.get("", response_model=dict)
@@ -176,10 +267,34 @@ def update_damaged_stock(
     ).first()
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
-    for field, value in data.dict(exclude_unset=True).items():
+
+    update_data = data.dict(exclude_unset=True)
+
+    # Editing product/warehouse/quantity/inventory_type/source on a record
+    # that already posted its own inventory deduction must undo the old
+    # deduction before the fields change — see _reverse_damaged_stock_effect.
+    was_posted = _is_posted(record)
+    inventory_fields_changed = any(
+        field in update_data and update_data[field] != getattr(record, field)
+        for field in _INVENTORY_AFFECTING_FIELDS
+    )
+    if was_posted and inventory_fields_changed:
+        _reverse_damaged_stock_effect(db, record)  # raises 400 if unsafe
+
+    for field, value in update_data.items():
         setattr(record, field, value)
+
+    now_posted = _is_posted(record)
+    if now_posted and (not was_posted or inventory_fields_changed):
+        _apply_damaged_stock_effect(db, record, current_user.username)
+
     record.modified_by = current_user.username
-    db.commit()
+    try:
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.error("update_damaged_stock db.commit failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Database error: {exc}")
     return _load(db, damaged_stock_id)
 
 
@@ -189,12 +304,19 @@ def delete_damaged_stock(
     current_user:     User    = Depends(require_permission("damaged_stock.view")),
     db:               Session = Depends(get_db),
 ):
+    """
+    Deleting a manually-entered damaged-stock record that already deducted
+    inventory must also undo that effect (same safety rule as
+    receiving/sales — see _reverse_damaged_stock_effect), or the stock it
+    removed would stay gone forever with no record left to explain why.
+    """
     record = db.query(DamagedStock).filter(
         DamagedStock.damaged_stock_id == damaged_stock_id,
         DamagedStock.deleted_at.is_(None),
     ).first()
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
+    _reverse_damaged_stock_effect(db, record)  # raises 400 if unsafe; no-op if never posted
     record.deleted_at = datetime.utcnow()
     record.deleted_by = current_user.username
     db.commit()
