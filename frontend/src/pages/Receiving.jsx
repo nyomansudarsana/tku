@@ -86,13 +86,9 @@ export default function Receiving() {
     if (rejected < 0)               { setError('Quantity rejected cannot be negative'); return }
     if (rejected > received)        { setError('Quantity rejected cannot exceed quantity received'); return }
     if (!form.product_id)           { setError('Please select a product'); return }
-    if (purchasePrice === null || purchasePrice < 0) {
-      setError('Purchase Price From Vendor is required (enter 0 only if genuinely free stock)')
-      return
-    }
-    if (purchasePrice === 0 && !window.confirm(
-      'Purchase Price is 0. This will affect inventory valuation and margin reporting. Continue anyway?'
-    )) {
+    if (!form.warehouse_id)         { setError('Please select a destination warehouse — a receiving cannot update stock without one'); return }
+    if (purchasePrice === null || purchasePrice <= 0) {
+      setError('Purchase Price From Vendor must be greater than 0')
       return
     }
 
@@ -266,14 +262,15 @@ export default function Receiving() {
             </div>
 
             <div>
-              <label className="label">Destination Warehouse</label>
+              <label className="label">Destination Warehouse *</label>
               <SearchableSelect
                 endpoint="/warehouses"
                 labelField="warehouse_name"
                 valueField="warehouse_id"
                 value={form.warehouse_id}
                 onChange={v => setForm(f => ({ ...f, warehouse_id: v }))}
-                placeholder="Select warehouse (optional)"
+                placeholder="Select warehouse"
+                required
                 emptyHint="No warehouses found"
               />
               <p style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.25rem' }}>
@@ -322,13 +319,13 @@ export default function Receiving() {
             <div style={{ gridColumn: '1 / -1' }}>
               <label className="label">Purchase Price From Vendor (per unit) *</label>
               <input
-                className="input" type="number" required min="0" step="1"
+                className="input" type="number" required min="0.01" step="1"
                 placeholder="e.g. 250000"
                 value={form.purchase_price}
                 onChange={e => setForm(f => ({ ...f, purchase_price: e.target.value }))}
               />
               <p style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.25rem' }}>
-                Used for inventory valuation, damage loss calculation and sales margin reporting
+                The price entered is the net price excluding input VAT.
               </p>
             </div>
 

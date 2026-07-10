@@ -44,12 +44,13 @@ export default function SalesReport() {
   // provides alongside them — summing the per-unit column directly would
   // produce a meaningless blended number across lines of different quantity.
   const totals = items.reduce((acc, r) => {
+    acc.discount += r._line_discount_amount || 0
     acc.exclVat += r._line_sales_price_excl_vat || 0
     acc.vat += r._line_vat_amount || 0
     acc.inclVat += r._line_sales_price_incl_vat || 0
     acc.margin += r._line_margin || 0
     return acc
-  }, { exclVat: 0, vat: 0, inclVat: 0, margin: 0 })
+  }, { discount: 0, exclVat: 0, vat: 0, inclVat: 0, margin: 0 })
 
   const handleExport = async () => {
     setExporting(true)
@@ -105,15 +106,16 @@ export default function SalesReport() {
             <thead>
               <tr>
                 <th>Date</th><th>Sales #</th><th>Store</th><th>Customer</th><th>Product</th>
-                <th>Qty Sold</th><th>Purchase Price</th><th>Sales Price Ex VAT</th><th>VAT</th>
+                <th>Qty Sold</th><th>Purchase Price</th><th>Discount (%)</th><th>Discount Amount</th>
+                <th>Sales Price Ex VAT</th><th>VAT</th>
                 <th>Sales Price Inc VAT</th><th>Margin</th><th>Margin %</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={12} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>Loading...</td></tr>
+                <tr><td colSpan={14} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>Loading...</td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={12} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>No sales in this range</td></tr>
+                <tr><td colSpan={14} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>No sales in this range</td></tr>
               ) : items.map((r, i) => (
                 <tr key={i}>
                   <td style={{ fontSize: '0.8rem' }}>{formatDate(r.sales_date)}</td>
@@ -125,6 +127,8 @@ export default function SalesReport() {
                   <td style={{ color: r.purchase_price == null ? '#94a3b8' : undefined, fontStyle: r.purchase_price == null ? 'italic' : undefined }}>
                     {r.purchase_price != null ? formatCurrency(r.purchase_price) : 'N/A'}
                   </td>
+                  <td>{r.discount_pct ? `${r.discount_pct}%` : '—'}</td>
+                  <td>{r.discount_amount ? formatCurrency(r.discount_amount) : '—'}</td>
                   <td>{formatCurrency(r.sales_price_excl_vat)}</td>
                   <td style={{ color: '#059669' }}>{formatCurrency(r.vat_amount)}</td>
                   <td style={{ fontWeight: 600 }}>{formatCurrency(r.sales_price_incl_vat)}</td>
@@ -141,6 +145,8 @@ export default function SalesReport() {
               <tfoot>
                 <tr style={{ fontWeight: 700, background: '#f8fafc' }}>
                   <td colSpan={7} style={{ textAlign: 'right' }}>Totals</td>
+                  <td></td>
+                  <td>{formatCurrency(totals.discount)}</td>
                   <td>{formatCurrency(totals.exclVat)}</td>
                   <td style={{ color: '#059669' }}>{formatCurrency(totals.vat)}</td>
                   <td>{formatCurrency(totals.inclVat)}</td>

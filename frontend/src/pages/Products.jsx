@@ -79,6 +79,7 @@ export default function Products() {
         category_id: form.category_id ? parseInt(form.category_id) : null,
         sale_price: parseFloat(form.sale_price),
         minimum_stock_level: parseFloat(form.minimum_stock_level) || 0,
+        sku: form.sku.trim() || null,
       }
       if (editing) await productsAPI.update(editing.product_id, data)
       else await productsAPI.create(data)

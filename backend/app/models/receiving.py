@@ -12,6 +12,10 @@ class Receiving(Base, AuditMixin):
     received_date = Column(Date, nullable=False, index=True)
     supplier_id = Column(Integer, ForeignKey("suppliers.supplier_id"), nullable=True)
     product_id = Column(Integer, ForeignKey("products.product_id"), nullable=False)
+    # Column stays nullable at the DB level so historical rows saved before
+    # warehouse_id was required (a past bug — see ReceivingCreate) can still
+    # be read/reported on; ReceivingCreate/ReceivingUpdate require it going
+    # forward since a receiving with no warehouse never posts to Inventory.
     warehouse_id = Column(Integer, ForeignKey("warehouses.warehouse_id"), nullable=True)
     quantity_received = Column(Integer, default=0, nullable=False)
     quantity_accepted = Column(Integer, default=0, nullable=False)

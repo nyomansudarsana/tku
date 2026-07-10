@@ -1,15 +1,23 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, joinedload
 from typing import Optional
-from datetime import datetime
 from ..database import get_db
 from ..models.inventory import Inventory
 from ..models.user import User
-from ..schemas.inventory import InventoryCreate, InventoryUpdate, InventoryResponse
-from ..services.auth import get_current_user
+from ..schemas.inventory import InventoryResponse
 from ..services.permissions import require_permission
 
 router = APIRouter(prefix="/inventories", tags=["Inventory"])
+
+# Inventory is system-generated and read-only by design: quantity/avg_cost
+# must only change through an audited business transaction (Receiving, Sale,
+# Sales/Supplier Return, Damaged Stock, Stock Opname, Stock Movement) that
+# writes a matching InventoryLedger row via update_inventory_balance(). A
+# direct create/update/delete here previously let any user with
+# "inventory.view" silently overwrite quantity or soft-delete a bucket with
+# no ledger entry and no avg_cost protection, desyncing the ledger from the
+# on-hand balance — so those endpoints were removed rather than left as a
+# bypass. See services/inventory_service.py.
 
 
 def load_inventory(db, inventory_id):
@@ -43,41 +51,9 @@ def list_inventories(
     return {"total": total, "page": page, "limit": limit, "items": [InventoryResponse.from_orm(i) for i in items]}
 
 
-@router.post("", response_model=InventoryResponse)
-def create_inventory(data: InventoryCreate, current_user: User = Depends(require_permission("inventory.view")), db: Session = Depends(get_db)):
-    inv = Inventory(**data.dict(), created_by=current_user.username)
-    db.add(inv)
-    db.commit()
-    db.refresh(inv)
-    return load_inventory(db, inv.inventory_id)
-
-
 @router.get("/{inventory_id}", response_model=InventoryResponse)
 def get_inventory(inventory_id: int, current_user: User = Depends(require_permission("inventory.view")), db: Session = Depends(get_db)):
     inv = load_inventory(db, inventory_id)
     if not inv:
         raise HTTPException(status_code=404, detail="Inventory not found")
     return inv
-
-
-@router.put("/{inventory_id}", response_model=InventoryResponse)
-def update_inventory(inventory_id: int, data: InventoryUpdate, current_user: User = Depends(require_permission("inventory.view")), db: Session = Depends(get_db)):
-    inv = db.query(Inventory).filter(Inventory.inventory_id == inventory_id, Inventory.deleted_at.is_(None)).first()
-    if not inv:
-        raise HTTPException(status_code=404, detail="Inventory not found")
-    for field, value in data.dict(exclude_unset=True).items():
-        setattr(inv, field, value)
-    inv.modified_by = current_user.username
-    db.commit()
-    return load_inventory(db, inventory_id)
-
-
-@router.delete("/{inventory_id}")
-def delete_inventory(inventory_id: int, current_user: User = Depends(require_permission("inventory.view")), db: Session = Depends(get_db)):
-    inv = db.query(Inventory).filter(Inventory.inventory_id == inventory_id, Inventory.deleted_at.is_(None)).first()
-    if not inv:
-        raise HTTPException(status_code=404, detail="Inventory not found")
-    inv.deleted_at = datetime.utcnow()
-    inv.deleted_by = current_user.username
-    db.commit()
-    return {"message": "Inventory deleted"}

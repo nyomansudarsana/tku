@@ -230,6 +230,13 @@ def _compute_sales_report(
         vat_per_unit      = round(line_vat / qty, 2) if qty and line_vat is not None else None
         incl_vat_per_unit = round(line_incl_vat / qty, 2) if qty and line_incl_vat is not None else None
 
+        # Discount: pct applies uniformly across the line (not a per-unit
+        # figure), but the amount is shown per-unit for consistency with the
+        # other price columns above.
+        discount_pct = detail.discount_pct
+        line_discount_amount = detail.discount_amount
+        discount_amount_per_unit = round(line_discount_amount / qty, 2) if qty and line_discount_amount is not None else None
+
         # Purchase Price is already per-unit (Inventory.avg_cost snapshotted
         # at sale time — see services/inventory_service.py). Margin formula
         # per spec: Margin = Sales Price Excl VAT − Purchase Price (per unit);
@@ -252,6 +259,8 @@ def _compute_sales_report(
             "product_name": product.product_name if product else f"#{detail.product_id}",
             "quantity": qty,
             "purchase_price": unit_cost,
+            "discount_pct": discount_pct,
+            "discount_amount": discount_amount_per_unit,
             "sales_price_excl_vat": excl_vat_per_unit,
             "vat_amount": vat_per_unit,
             "sales_price_incl_vat": incl_vat_per_unit,
@@ -262,6 +271,7 @@ def _compute_sales_report(
             # aggregation helpers, not report display columns (same
             # convention BulkUpload's preview table uses to hide internal
             # fields), so they're intentionally omitted from the Excel export.
+            "_line_discount_amount": line_discount_amount,
             "_line_sales_price_excl_vat": line_excl_vat,
             "_line_vat_amount": line_vat,
             "_line_sales_price_incl_vat": line_incl_vat,
@@ -283,7 +293,8 @@ def sales_report(
     if format == "xlsx":
         headers = [
             "Sales Date", "Sales Number", "Store", "Customer", "Product", "Qty Sold",
-            "Purchase Price", "Sales Price Ex VAT", "VAT", "Sales Price Inc VAT",
+            "Purchase Price", "Discount (%)", "Discount Amount",
+            "Sales Price Ex VAT", "VAT", "Sales Price Inc VAT",
             "Margin", "Margin %",
         ]
         # Purchase Price / Margin / Margin % show "N/A" rather than a blank
@@ -292,7 +303,8 @@ def sales_report(
         na = lambda v: v if v is not None else "N/A"
         xlsx_rows = [
             [r["sales_date"], r["sales_id"], r["store_name"], r["customer_name"], r["product_name"],
-             r["quantity"], na(r["purchase_price"]), r["sales_price_excl_vat"], r["vat_amount"],
+             r["quantity"], na(r["purchase_price"]), r["discount_pct"], r["discount_amount"],
+             r["sales_price_excl_vat"], r["vat_amount"],
              r["sales_price_incl_vat"], na(r["margin"]), na(r["margin_pct"])]
             for r in rows
         ]

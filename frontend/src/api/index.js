@@ -67,12 +67,12 @@ export const receivingsAPI = {
   delete: (id)       => api.delete(`/receivings/${id}`),
 }
 
+// Inventory is read-only in the UI — quantity/avg_cost only change through
+// an audited business transaction (Receiving, Sales, Returns, Damaged Stock,
+// Stock Opname, Stock Movement). See backend/app/routers/inventory.py.
 export const inventoriesAPI = {
-  list:   (params)   => api.get('/inventories', { params }),
-  create: (data)     => api.post('/inventories', data),
-  get:    (id)       => api.get(`/inventories/${id}`),
-  update: (id, data) => api.put(`/inventories/${id}`, data),
-  delete: (id)       => api.delete(`/inventories/${id}`),
+  list: (params) => api.get('/inventories', { params }),
+  get:  (id)     => api.get(`/inventories/${id}`),
 }
 
 export const stockMovementsAPI = {

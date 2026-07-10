@@ -112,6 +112,9 @@ def run_migrations(db_path: str) -> None:
         # ── Reports module: filter indexes ────────────────────────────────────
         _migrate_report_indexes_v1(c)
 
+        # ── Repair products.sku='' rows (UNIQUE collision) to NULL ───────────
+        _migrate_products_sku_v1(c)
+
         conn.commit()
         logger.info("Database migrations completed successfully")
     except Exception as exc:
@@ -960,3 +963,18 @@ def _migrate_report_indexes_v1(c) -> None:
         if not _table_exists(c, table) or not _column_exists(c, table, column):
             continue
         c.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table}({column})")
+
+
+def _migrate_products_sku_v1(c) -> None:
+    """
+    products.sku is UNIQUE — SQLite treats '' as a real, colliding value
+    (unlike NULL), so any pre-existing sku='' rows (inserted before the
+    create/update endpoints normalized blank SKU to NULL) must be repaired
+    or the next blank-SKU product create will hit UNIQUE constraint failed.
+    """
+    if not _table_exists(c, "products"):
+        return
+    c.execute("UPDATE products SET sku = NULL WHERE sku = ''")
+    affected = c.rowcount
+    if affected:
+        logger.info("products: repaired %d row(s) with sku='' to NULL", affected)

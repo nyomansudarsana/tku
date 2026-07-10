@@ -57,7 +57,7 @@ TEMPLATES = {
             "received_date", "supplier_name", "product_name", "category", "warehouse_name",
             "quantity_received", "quantity_rejected", "purchase_price", "inventory_type",
         ],
-        "required": ["received_date", "supplier_name", "product_name", "quantity_received", "purchase_price"],
+        "required": ["received_date", "supplier_name", "product_name", "warehouse_name", "quantity_received", "purchase_price"],
         "example": [{
             "received_date": "2026-07-01", "supplier_name": "Nazava", "product_name": "Nazava Filter S",
             "category": "Water Filter", "warehouse_name": "Ubud Warehouse", "quantity_received": "100",
@@ -214,7 +214,13 @@ def _validate_receivings(rows: list[dict], db: Session) -> tuple[list[dict], lis
                 errs.append(f"Product '{product_name}' belongs to category '{actual_category or 'none'}', not '{category_name}'")
 
         warehouse_id = None
-        if warehouse_name:
+        if not warehouse_name:
+            # A receiving with no warehouse never posts to Inventory at all
+            # (see routers/receiving.py::_apply_receiving_effect), silently
+            # leaving avg_cost/quantity untouched — same rule as the manual
+            # Receiving form, so bulk import can't create that gap either.
+            errs.append("'warehouse_name' is required")
+        else:
             warehouse_id = warehouses.get(warehouse_name)
             if warehouse_id is None:
                 errs.append(f"Warehouse '{warehouse_name}' not found")
@@ -247,8 +253,8 @@ def _validate_receivings(rows: list[dict], db: Session) -> tuple[list[dict], lis
         else:
             try:
                 purchase_price = float(purchase_price_str)
-                if purchase_price < 0:
-                    errs.append("'purchase_price' cannot be negative")
+                if purchase_price <= 0:
+                    errs.append("'purchase_price' must be greater than 0")
             except ValueError:
                 errs.append(f"'purchase_price' must be a number, got '{purchase_price_str}'")
 

@@ -12,19 +12,6 @@ class InventoryBase(BaseModel):
     remark: Optional[str] = None
 
 
-class InventoryCreate(InventoryBase):
-    pass
-
-
-class InventoryUpdate(BaseModel):
-    product_id: Optional[int] = None
-    warehouse_id: Optional[int] = None
-    inventory_type: Optional[str] = None
-    quantity: Optional[int] = None
-    unit: Optional[str] = None
-    remark: Optional[str] = None
-
-
 class ProductInfo(BaseModel):
     product_id: int
     product_name: str

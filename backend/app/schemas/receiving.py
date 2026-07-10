@@ -28,15 +28,17 @@ class ReceivingCreate(BaseModel):
     New workflow: user provides quantity_received + quantity_rejected.
     quantity_accepted is auto-calculated = quantity_received - quantity_rejected.
 
-    purchase_price is required (not defaulted) — it drives Inventory.avg_cost,
-    which in turn drives inventory valuation, damage loss and sales margin.
-    A value of 0 is allowed but flagged by the frontend for confirmation since
-    it usually means an omitted entry, not genuinely free stock.
+    warehouse_id is required — a receiving with no warehouse never posts to
+    Inventory at all (see _apply_receiving_effect), silently leaving the
+    product's avg_cost/quantity untouched even though a Receiving record
+    exists. purchase_price must be > 0 for the same reason: it drives
+    Inventory.avg_cost via the weighted-average blend, and a 0 gets blended
+    in as a real cost, dragging avg_cost toward 0 on the very first receipt.
     """
     received_date:     date
     supplier_id:       Optional[int] = None
     product_id:        int
-    warehouse_id:      Optional[int] = None
+    warehouse_id:      int
     quantity_received: int
     quantity_rejected: int = 0
     # quantity_accepted sent by client is ignored — computed by validator below
@@ -49,8 +51,8 @@ class ReceivingCreate(BaseModel):
     @field_validator("purchase_price")
     @classmethod
     def validate_purchase_price(cls, v):
-        if v < 0:
-            raise ValueError("purchase_price cannot be negative")
+        if v <= 0:
+            raise ValueError("purchase_price must be greater than 0")
         return v
 
     @field_validator("inventory_type")
@@ -94,6 +96,20 @@ class ReceivingUpdate(BaseModel):
     def validate_inventory_type(cls, v):
         if v is not None and v not in INVENTORY_TYPES:
             raise ValueError(f"inventory_type must be one of: {', '.join(INVENTORY_TYPES)}")
+        return v
+
+    @field_validator("purchase_price")
+    @classmethod
+    def validate_purchase_price(cls, v):
+        if v is not None and v <= 0:
+            raise ValueError("purchase_price must be greater than 0")
+        return v
+
+    @field_validator("warehouse_id")
+    @classmethod
+    def validate_warehouse_id(cls, v):
+        if v is None:
+            raise ValueError("warehouse_id is required — a receiving must always post to a warehouse")
         return v
 
     @model_validator(mode='after')

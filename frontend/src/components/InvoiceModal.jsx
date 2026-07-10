@@ -109,13 +109,15 @@ function InvoiceContent({ sale }) {
         <div style={S.invoBadge}>
           <div style={S.invoNum}>{invNum}</div>
           <div style={S.invoDate}>Date: {formatDate(sale.sales_date)}</div>
-          <div style={{ ...S.invoDate, marginTop: '4px' }}>
-            <span style={{
-              background: sale.payment_status === 'Paid' ? '#dcfce7' : '#fee2e2',
-              color:      sale.payment_status === 'Paid' ? '#15803d' : '#dc2626',
-              padding: '2px 8px', borderRadius: '4px', fontWeight: '600', fontSize: '10px',
-            }}>{sale.payment_status}</span>
-          </div>
+          {sale.payment_status !== 'Unpaid' && (
+            <div style={{ ...S.invoDate, marginTop: '4px' }}>
+              <span style={{
+                background: sale.payment_status === 'Paid' ? '#dcfce7' : '#fee2e2',
+                color:      sale.payment_status === 'Paid' ? '#15803d' : '#dc2626',
+                padding: '2px 8px', borderRadius: '4px', fontWeight: '600', fontSize: '10px',
+              }}>{sale.payment_status}</span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -136,7 +138,10 @@ function InvoiceContent({ sale }) {
             {[
               ['Invoice No.',   invNum],
               ['Invoice Date',  formatDate(sale.sales_date)],
-              ['Payment Status', sale.payment_status],
+              // Staff print unpaid transfer/EDC invoices before payment is
+              // confirmed and stamp "PAID" by hand — showing "Unpaid" on the
+              // printed invoice would contradict that stamp, so omit it here.
+              ...(sale.payment_status !== 'Unpaid' ? [['Payment Status', sale.payment_status]] : []),
             ].map(([l, v]) => (
               <div key={l} style={S.infoRow}><span style={S.infoLabel}>{l}</span><span style={S.infoValue}>{v}</span></div>
             ))}

@@ -102,23 +102,26 @@ def _reverse_receiving_effect(db: Session, receiving: Receiving) -> None:
 
 
 def _apply_receiving_effect(db: Session, receiving: Receiving, created_by: str) -> None:
-    """Post (or re-post) a receiving's accepted quantity/cost to Inventory."""
-    if receiving.warehouse_id and receiving.quantity_accepted and receiving.quantity_accepted > 0:
-        try:
-            update_inventory_balance(
-                db,
-                product_id=receiving.product_id,
-                warehouse_id=receiving.warehouse_id,
-                qty_in=receiving.quantity_accepted,
-                qty_out=0,
-                transaction_type="RECEIVING",
-                reference_no=f"RCV-{receiving.receiving_id}",
-                inventory_type=receiving.inventory_type,
-                unit_cost_override=receiving.purchase_price,
-                created_by=created_by,
-            )
-        except Exception as exc:
-            logger.warning("Inventory update failed for receiving: %s", exc)
+    """
+    Post (or re-post) a receiving's accepted quantity/cost to Inventory.
+
+    Does NOT swallow errors — a Receiving whose inventory/cost update fails
+    must not be allowed to commit as if it had succeeded (the caller wraps
+    this in the same try/except as db.commit() and rolls back on failure).
+    """
+    if receiving.quantity_accepted and receiving.quantity_accepted > 0:
+        update_inventory_balance(
+            db,
+            product_id=receiving.product_id,
+            warehouse_id=receiving.warehouse_id,
+            qty_in=receiving.quantity_accepted,
+            qty_out=0,
+            transaction_type="RECEIVING",
+            reference_no=f"RCV-{receiving.receiving_id}",
+            inventory_type=receiving.inventory_type,
+            unit_cost_override=receiving.purchase_price,
+            created_by=created_by,
+        )
 
 
 def load_receiving(db, receiving_id):
@@ -198,9 +201,6 @@ def create_receiving(
     db.add(receiving)
     db.flush()  # get receiving_id
 
-    # ── Inventory update (accepted qty only) ────────────────────────────────
-    _apply_receiving_effect(db, receiving, current_user.username)
-
     # ── Auto-create Supplier Return for rejected items ───────────────────────
     if receiving.quantity_rejected > 0 and receiving.supplier_id:
         sr = SupplierReturn(
@@ -218,11 +218,15 @@ def create_receiving(
         db.add(sr)
 
     try:
+        # ── Inventory update (accepted qty only) ─────────────────────────────
+        # Posted in the same try/except as the commit — if it fails, the whole
+        # receiving must roll back rather than be saved with no cost update.
+        _apply_receiving_effect(db, receiving, current_user.username)
         db.commit()
     except Exception as exc:
         db.rollback()
-        logger.error("create_receiving db.commit failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Database error: {exc}")
+        logger.error("create_receiving failed to post inventory/commit: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save receiving: {exc}")
     db.refresh(receiving)
     return load_receiving(db, receiving.receiving_id)
 
@@ -284,15 +288,14 @@ def update_receiving(
     receiving.modified_by = current_user.username
     db.flush()
 
-    if needs_reapply:
-        _apply_receiving_effect(db, receiving, current_user.username)
-
     try:
+        if needs_reapply:
+            _apply_receiving_effect(db, receiving, current_user.username)
         db.commit()
     except Exception as exc:
         db.rollback()
-        logger.error("update_receiving db.commit failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Database error: {exc}")
+        logger.error("update_receiving failed to post inventory/commit: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to save receiving: {exc}")
     return load_receiving(db, receiving_id)
 
 

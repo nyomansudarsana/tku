@@ -116,8 +116,19 @@ def list_products(
     return {"total": total, "page": page, "limit": limit, "items": [ProductResponse.from_orm(p) for p in items]}
 
 
+def _check_sku_unique(db: Session, sku: Optional[str], exclude_product_id: Optional[int] = None):
+    if not sku:
+        return
+    q = db.query(Product).filter(Product.sku == sku, Product.deleted_at.is_(None))
+    if exclude_product_id is not None:
+        q = q.filter(Product.product_id != exclude_product_id)
+    if q.first():
+        raise HTTPException(status_code=400, detail=f"SKU '{sku}' is already used by another product")
+
+
 @router.post("", response_model=ProductResponse)
 def create_product(data: ProductCreate, current_user: User = Depends(require_permission("master_data.products")), db: Session = Depends(get_db)):
+    _check_sku_unique(db, data.sku)
     product = Product(**data.dict(), created_by=current_user.username)
     db.add(product)
     db.flush()  # get product_id before syncing supplier_products
@@ -141,13 +152,17 @@ def update_product(product_id: int, data: ProductUpdate, current_user: User = De
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
 
+    payload = data.dict(exclude_unset=True)
+    if "sku" in payload:
+        _check_sku_unique(db, payload["sku"], exclude_product_id=product_id)
+
     old_supplier_id = product.supplier_id
-    for field, value in data.dict(exclude_unset=True).items():
+    for field, value in payload.items():
         setattr(product, field, value)
     product.modified_by = current_user.username
     db.flush()
 
-    if "supplier_id" in data.dict(exclude_unset=True):
+    if "supplier_id" in payload:
         _sync_supplier_product(db, product_id, product.supplier_id, old_supplier_id)
 
     db.commit()
