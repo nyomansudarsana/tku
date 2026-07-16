@@ -1,6 +1,30 @@
 from pydantic import BaseModel, field_validator
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import date, datetime
+
+BREAKDOWN_CATEGORIES = ["Lost/Missing", "Damaged", "Expired", "Incomplete", "Rodent", "Other"]
+
+
+# ── Variance breakdown schemas ─────────────────────────────────────────────────
+
+class BreakdownItem(BaseModel):
+    category: Literal["Lost/Missing", "Damaged", "Expired", "Incomplete", "Rodent", "Other"]
+    quantity: int
+    notes:    Optional[str] = None
+
+    @field_validator("quantity")
+    @classmethod
+    def positive(cls, v):
+        if v <= 0:
+            raise ValueError("Breakdown quantity must be greater than 0")
+        return v
+
+
+class BreakdownItemResponse(BreakdownItem):
+    breakdown_id: int
+
+    class Config:
+        from_attributes = True
 
 
 # ── Detail schemas ────────────────────────────────────────────────────────────
@@ -14,6 +38,7 @@ class StockOpnameDetailCreate(BaseModel):
     incomplete_qty: int = 0   # units present but no longer sellable as a complete product
     reason:       Optional[str] = None
     remarks:      Optional[str] = None
+    breakdown:    Optional[List[BreakdownItem]] = None
 
     @field_validator("good_qty", "damaged_qty", "incomplete_qty")
     @classmethod
@@ -29,6 +54,7 @@ class StockOpnameDetailUpdate(BaseModel):
     incomplete_qty: Optional[int] = None
     reason:       Optional[str]   = None
     remarks:      Optional[str]   = None
+    breakdown:    Optional[List[BreakdownItem]] = None
 
     @field_validator("good_qty", "damaged_qty", "incomplete_qty")
     @classmethod
@@ -59,6 +85,7 @@ class StockOpnameDetailResponse(BaseModel):
     difference_qty: int          # good_qty - system_qty  (inventory adjustment)
     reason:         Optional[str] = None
     remarks:        Optional[str] = None
+    breakdown:      List[BreakdownItemResponse] = []
     product:        Optional[_ProductInfo] = None
     class Config:
         from_attributes = True

@@ -6,9 +6,8 @@ import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
 import { formatDate, formatNumber, formatCurrency } from '../utils/format'
-import { exportCsv } from '../utils/exportCsv'
+import { downloadBlob } from '../utils/downloadFile'
 
-const UNITS = ['PCS', 'Pack', 'Unit', 'Box', 'Set', 'Kg', 'Liter']
 const INV_TYPES = ['TKU Product', 'Consignment', 'Titip Jual']
 
 const empty = {
@@ -37,15 +36,20 @@ export default function Receiving() {
   const [error,    setError]    = useState('')
   // Seeded from the notification bell's click-through (?has_rejected=true)
   const [hasRejectedFilter, setHasRejectedFilter] = useState(searchParams.get('has_rejected') === 'true')
-  const limit = 15
+  const [exporting, setExporting] = useState(false)
+  const [limit, setLimit] = useState(15)
+
+  const buildFilterParams = useCallback(() => {
+    const params = {}
+    if (hasRejectedFilter) params.has_rejected = true
+    return params
+  }, [hasRejectedFilter])
 
   const load = useCallback(async () => {
-    const params = { page, limit }
-    if (hasRejectedFilter) params.has_rejected = true
-    const res = await receivingsAPI.list(params)
+    const res = await receivingsAPI.list({ page, limit, ...buildFilterParams() })
     setItems(res.data.items)
     setTotal(res.data.total)
-  }, [page, hasRejectedFilter])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
@@ -126,24 +130,17 @@ export default function Receiving() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn btn-secondary" onClick={() => {
-            const rows = items.map(r => ({
-              date:     r.received_date,
-              supplier: r.supplier?.supplier_name || '',
-              product:  r.product?.product_name   || '',
-              received: r.quantity_received,
-              accepted: r.quantity_accepted,
-              rejected: r.quantity_rejected,
-              unit:     r.unit,
-              purchase_price: r.purchase_price,
-              inventory_type: r.inventory_type,
-              notes:    r.notes || '',
-            }))
-            exportCsv(rows,
-              ['date','supplier','product','received','accepted','rejected','unit','purchase_price','inventory_type','notes'],
-              { date:'Date', supplier:'Supplier', product:'Product', received:'Received', accepted:'Accepted', rejected:'Rejected', unit:'Unit', purchase_price:'Purchase Price', inventory_type:'Inventory Type', notes:'Notes' },
-              'receiving-export')
-          }}>Export CSV</button>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await receivingsAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'receiving-export.xlsx')
+            } catch {
+              alert('Failed to export receivings.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
           <button className="btn btn-primary" onClick={openCreate}>+ New Receiving</button>
         </div>
       </div>
@@ -204,7 +201,8 @@ export default function Receiving() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
 
       {/* ── Form Modal ── */}
@@ -249,7 +247,7 @@ export default function Receiving() {
                 valueField="product_id"
                 params={form.supplier_id ? { supplier_id: form.supplier_id, status: 'Active' } : { status: 'Active' }}
                 value={form.product_id}
-                onChange={v => setForm(f => ({ ...f, product_id: v }))}
+                onChange={(v, opt) => setForm(f => ({ ...f, product_id: v, unit: opt?.unit || f.unit }))}
                 placeholder={form.supplier_id ? 'Search products from this supplier...' : 'Search product...'}
                 required
                 emptyHint="No active products found"
@@ -280,9 +278,10 @@ export default function Receiving() {
 
             <div>
               <label className="label">Unit</label>
-              <select className="input" value={form.unit} onChange={e => setForm(f => ({ ...f, unit: e.target.value }))}>
-                {UNITS.map(u => <option key={u}>{u}</option>)}
-              </select>
+              <input className="input" value={form.unit} disabled readOnly style={{ background: '#f9fafb', color: '#64748b' }} />
+              <p style={{ fontSize: '0.7rem', color: '#64748b', marginTop: '0.25rem' }}>
+                Set automatically from the selected product
+              </p>
             </div>
 
             <div>
@@ -319,7 +318,7 @@ export default function Receiving() {
             <div style={{ gridColumn: '1 / -1' }}>
               <label className="label">Purchase Price From Vendor (per unit) *</label>
               <input
-                className="input" type="number" required min="0.01" step="1"
+                className="input" type="number" required min="0" step="0.01"
                 placeholder="e.g. 250000"
                 value={form.purchase_price}
                 onChange={e => setForm(f => ({ ...f, purchase_price: e.target.value }))}

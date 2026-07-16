@@ -17,6 +17,7 @@ from ..services.auth import get_current_user
 from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
 from ..constants import DEFAULT_INVENTORY_TYPE
+from ..utils.xlsx import xlsx_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/supplier-returns", tags=["Supplier Returns"])
@@ -124,17 +125,13 @@ def _apply_supplier_return_effect(db: Session, sr: SupplierReturn, created_by: s
         logger.warning("Inventory deduction failed on supplier return send: %s", exc)
 
 
-@router.get("", response_model=dict)
-def list_supplier_returns(
+def _filtered_supplier_return_query(
+    db: Session,
     supplier_id: Optional[int] = None,
     product_id:  Optional[int] = None,
     status:      Optional[str] = None,
     date_from:   Optional[date] = None,
     date_to:     Optional[date] = None,
-    page:        int = Query(1, ge=1),
-    limit:       int = Query(20, ge=1, le=500),
-    current_user: User    = Depends(require_permission("supplier_returns.view")),
-    db:           Session = Depends(get_db),
 ):
     q = db.query(SupplierReturn).options(
         joinedload(SupplierReturn.supplier),
@@ -153,13 +150,50 @@ def list_supplier_returns(
     if date_to:
         q = q.filter(SupplierReturn.return_date <= date_to)
 
-    q = q.order_by(SupplierReturn.return_date.desc(), SupplierReturn.return_id.desc())
+    return q.order_by(SupplierReturn.return_date.desc(), SupplierReturn.return_id.desc())
+
+
+@router.get("", response_model=dict)
+def list_supplier_returns(
+    supplier_id: Optional[int] = None,
+    product_id:  Optional[int] = None,
+    status:      Optional[str] = None,
+    date_from:   Optional[date] = None,
+    date_to:     Optional[date] = None,
+    page:        int = Query(1, ge=1),
+    limit:       int = Query(20, ge=1, le=500),
+    current_user: User    = Depends(require_permission("supplier_returns.view")),
+    db:           Session = Depends(get_db),
+):
+    q = _filtered_supplier_return_query(db, supplier_id, product_id, status, date_from, date_to)
     total = q.count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     return {
         "total": total, "page": page, "limit": limit,
         "items": [SupplierReturnResponse.from_orm(r) for r in items],
     }
+
+
+@router.get("/export")
+def export_supplier_returns(
+    supplier_id: Optional[int] = None,
+    product_id:  Optional[int] = None,
+    status:      Optional[str] = None,
+    date_from:   Optional[date] = None,
+    date_to:     Optional[date] = None,
+    current_user: User    = Depends(require_permission("supplier_returns.view")),
+    db:           Session = Depends(get_db),
+):
+    """Excel export honoring the same filters as list_supplier_returns() above."""
+    items = _filtered_supplier_return_query(db, supplier_id, product_id, status, date_from, date_to).all()
+    headers = ["Return Date", "Supplier", "Product", "Warehouse", "Quantity", "Reason", "Status", "Remarks"]
+    rows = [
+        [str(r.return_date), r.supplier.supplier_name if r.supplier else "",
+         r.product.product_name if r.product else "", r.warehouse.warehouse_name if r.warehouse else "",
+         r.quantity, r.reason or "", r.status, r.remarks or ""]
+        for r in items
+    ]
+    return xlsx_response(headers, rows, "supplier-returns-export.xlsx")
 
 
 @router.post("", response_model=SupplierReturnResponse)

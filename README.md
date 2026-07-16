@@ -75,13 +75,15 @@ pip install -r requirements.txt
 # Seed the database
 python seed.py
 
-# Start the server
-uvicorn app.main:app --reload --port 8000
+# Start the server (auto-falls back to 8001/8002/8003 if 8000 is
+# unavailable — e.g. Windows "WinError 10013", see Troubleshooting below)
+python run.py
 ```
 
-Backend will be running at: http://localhost:8000
+Backend will be running at: http://localhost:8000 (or the fallback port printed
+in the console if 8000 was unavailable)
 
-API Docs: http://localhost:8000/docs
+API Docs: http://localhost:8000/docs (adjust the port to match the console output)
 
 ---
 
@@ -219,6 +221,45 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for full step-by-step instructions.
 Environment variables to configure:
 - Backend: `SECRET_KEY`, `ALLOWED_ORIGINS`, `DATABASE_URL`, `DEBUG`
 - Frontend: `VITE_API_BASE_URL` (full URL to HF Space + `/api/v1`)
+
+---
+
+## Troubleshooting
+
+### `[WinError 10013] An attempt was made to access a socket in a way forbidden by its access permissions`
+
+This is a Windows OS/environment condition, not an application bug — it means
+port 8000 (or whichever port you're binding to) can't be used, usually because:
+
+1. **Another process is already using it** — check with:
+   ```
+   netstat -ano | findstr :8000
+   ```
+   then `taskkill /PID <pid> /F` if it's safe to stop, or just let the
+   fallback below pick a different port.
+
+2. **Windows/Hyper-V has reserved (excluded) that port range** — common when
+   Hyper-V, WSL2, or Docker Desktop is installed. Check with:
+   ```
+   netsh int ipv4 show excludedportrange protocol=tcp
+   ```
+   If 8000 falls inside a listed range, no process can bind to it until the
+   reservation is released or you use a different port.
+
+3. A firewall or antivirus rule is blocking the bind.
+
+**Fix**: always start the backend with `python run.py` (not
+`uvicorn app.main:app --port 8000` directly) — it automatically probes ports
+8000, 8001, 8002, 8003 and starts on the first one that's actually available,
+printing which port it picked. The frontend's Vite dev server
+(`frontend/vite.config.js`) reads that port from `backend/.dev-port`
+automatically, so the `/api` proxy stays pointed at the right place with no
+manual reconfiguration — just make sure the backend is started **before**
+the frontend dev server.
+
+If all 4 fallback ports are unavailable, `run.py` prints the two commands
+above and exits with an explanation; set a different `PORT` in `backend/.env`
+and retry, or free up one of the ports.
 
 ---
 

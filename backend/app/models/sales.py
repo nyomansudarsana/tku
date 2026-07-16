@@ -25,7 +25,15 @@ class Sales(Base, AuditMixin):
     discount_amount = Column(Float, default=0, nullable=False)
     vat_amount      = Column(Float, default=0, nullable=False)
     subtotal        = Column(Float, default=0, nullable=False)
+    # VAT-excluded, discount-net total — subtotal above is VAT-inclusive and
+    # pre-discount, kept only for backward compat with existing readers.
+    basic_subtotal  = Column(Float, default=0, nullable=False)
     grand_total     = Column(Float, default=0, nullable=False)
+
+    # Online Customer support — shipping_cost is added on top of grand_total
+    # and is NOT subject to VAT (see _compute_header_totals's final_total).
+    customer_type   = Column(String(20), default="Walk-in Customer", nullable=False)
+    shipping_cost   = Column(Float, default=0, nullable=False)
 
     payment_method  = Column(String(30), default="Cash", nullable=False)
     payment_status  = Column(String(20), default="Paid", nullable=False)
@@ -41,6 +49,11 @@ class Sales(Base, AuditMixin):
 
     # Legacy column — kept for DB backward compat; always equal to vat_amount
     tax_amount = Column(Float, default=0, nullable=False)
+
+    @property
+    def final_total(self):
+        """Amount actually due: product grand_total + shipping_cost (not VAT-taxed)."""
+        return round((self.grand_total or 0) + (self.shipping_cost or 0), 2)
 
     store       = relationship("Store",       foreign_keys=[store_id])
     warehouse   = relationship("Warehouse",   foreign_keys=[warehouse_id])

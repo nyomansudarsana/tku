@@ -2,14 +2,17 @@ import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { stockOpnamesAPI, inventoriesAPI } from '../api'
 import SearchableSelect from '../components/SearchableSelect'
+import StockOpnamePrintModal from '../components/StockOpnamePrintModal'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
 import { formatDate, formatNumber } from '../utils/format'
+import { downloadBlob } from '../utils/downloadFile'
 import { useAuth } from '../context/AuthContext'
 
 const STATUSES = ['Draft', 'Approved', 'Rejected']
 const DIFF_REASONS = ['Damaged', 'Broken', 'Lost', 'Expired', 'Miscount', 'Theft', 'Other']
+const BREAKDOWN_CATEGORIES = ['Lost/Missing', 'Damaged', 'Expired', 'Incomplete', 'Rodent', 'Other']
 
 function StatusBadge({ status }) {
   const map = {
@@ -55,10 +58,12 @@ export default function StockOpname() {
   const [statusFilter, setStatusFilter] = useState(() => searchParams.get('status') || '')
   const [createModal, setCreateModal] = useState(false)
   const [detailModal, setDetailModal] = useState(false)
+  const [printModal,  setPrintModal]  = useState(false)
   const [selected,    setSelected]    = useState(null)
   const [deleteId,    setDeleteId]    = useState(null)
   const [loading,     setLoading]     = useState(false)
   const [error,       setError]       = useState('')
+  const [exporting,   setExporting]   = useState(false)
 
   // Create form
   const [newForm, setNewForm] = useState({
@@ -78,7 +83,7 @@ export default function StockOpname() {
   const [approving,         setApproving]         = useState(false)
   const [systemQtyPreview,  setSystemQtyPreview]  = useState(null)
   const [systemQtyFetching, setSystemQtyFetching] = useState(false)
-  const limit = 15
+  const [limit, setLimit] = useState(15)
 
   // Fetch system qty when product is selected in add form
   useEffect(() => {
@@ -93,13 +98,17 @@ export default function StockOpname() {
       .finally(() => setSystemQtyFetching(false))
   }, [addProduct.product_id, selected?.warehouse_id])
 
-  const load = useCallback(async () => {
-    const params = { page, limit }
+  const buildFilterParams = useCallback(() => {
+    const params = {}
     if (statusFilter) params.status = statusFilter
-    const res = await stockOpnamesAPI.list(params)
+    return params
+  }, [statusFilter])
+
+  const load = useCallback(async () => {
+    const res = await stockOpnamesAPI.list({ page, limit, ...buildFilterParams() })
     setItems(res.data.items || [])
     setTotal(res.data.total || 0)
-  }, [page, statusFilter])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
@@ -178,9 +187,9 @@ export default function StockOpname() {
     } finally { setAddLoading(false) }
   }
 
-  const handleUpdateDetail = async (detailId, good_qty, damaged_qty, incomplete_qty, reason) => {
+  const handleUpdateDetail = async (detailId, good_qty, damaged_qty, incomplete_qty, reason, breakdown) => {
     try {
-      await stockOpnamesAPI.updateDetail(selected.opname_id, detailId, { good_qty, damaged_qty, incomplete_qty, reason })
+      await stockOpnamesAPI.updateDetail(selected.opname_id, detailId, { good_qty, damaged_qty, incomplete_qty, reason, breakdown })
       await refreshSelected()
     } catch (err) {
       alert(err.response?.data?.detail || 'Failed to update.')
@@ -250,13 +259,26 @@ export default function StockOpname() {
             Physical stock count — Good Qty adjusts available inventory, Damaged Qty creates damage records
           </p>
         </div>
-        <button className="btn btn-primary" onClick={() => {
-          setNewForm({ opname_date: new Date().toISOString().slice(0, 10), warehouse_id: '', store_id: '', remarks: '', performed_by: '' })
-          setError('')
-          setCreateModal(true)
-        }}>
-          + New Opname
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await stockOpnamesAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'stock-opname-export.xlsx')
+            } catch {
+              alert('Failed to export stock opnames.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
+          <button className="btn btn-primary" onClick={() => {
+            setNewForm({ opname_date: new Date().toISOString().slice(0, 10), warehouse_id: '', store_id: '', remarks: '', performed_by: '' })
+            setError('')
+            setCreateModal(true)
+          }}>
+            + New Opname
+          </button>
+        </div>
       </div>
 
       {/* ── List ── */}
@@ -311,7 +333,8 @@ export default function StockOpname() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
 
       {/* ── Create Modal ── */}
@@ -476,13 +499,18 @@ export default function StockOpname() {
                     <div style={{ flex: '0 0 240px' }}>
                       <label className="label" style={{ fontSize: '0.72rem' }}>Product</label>
                       <SearchableSelect
+                        key={selected?.warehouse_id || 'no-warehouse'}
                         endpoint="/products"
                         labelField="product_name"
                         valueField="product_id"
-                        params={{ status: 'Active' }}
+                        params={selected?.warehouse_id
+                          ? { status: 'Active', in_stock_only: true, warehouse_id: selected.warehouse_id }
+                          : { status: 'Active' }}
                         value={addProduct.product_id}
                         onChange={v => setAddProduct(p => ({ ...p, product_id: v }))}
-                        placeholder="Select product..."
+                        placeholder={selected?.warehouse_id ? 'Select product...' : 'Set a warehouse first'}
+                        disabled={!selected?.warehouse_id}
+                        emptyHint={selected?.warehouse_id ? 'No products with available stock in this warehouse' : 'Set a warehouse on this opname first'}
                       />
                     </div>
 
@@ -592,6 +620,7 @@ export default function StockOpname() {
                           <th style={{ textAlign: 'right' }}>Physical Qty</th>
                           <th style={{ textAlign: 'right', color: '#7c3aed' }}>Variance</th>
                           <th>Reason</th>
+                          <th>Variance Breakdown</th>
                           {isEditable && <th style={{ width: '80px' }}></th>}
                         </tr>
                       </thead>
@@ -612,13 +641,16 @@ export default function StockOpname() {
                 )}
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <button className="btn btn-secondary" onClick={() => setPrintModal(true)}>Export PDF</button>
                 <button className="btn btn-secondary" onClick={() => setDetailModal(false)}>Close</button>
               </div>
             </div>
           )
         })()}
       </Modal>
+
+      <StockOpnamePrintModal open={printModal} onClose={() => setPrintModal(false)} opname={selected} />
 
       <ConfirmDialog
         open={!!deleteId}
@@ -637,11 +669,15 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
   const initDamagedQty    = String(detail.damaged_qty ?? 0)
   const initIncompleteQty = String(detail.incomplete_qty ?? 0)
   const initReason        = detail.reason || ''
+  const initBreakdown     = (detail.breakdown || []).map(b => ({ category: b.category, quantity: b.quantity, notes: b.notes || '' }))
 
   const [goodQty,       setGoodQty]       = useState(initGoodQty)
   const [damagedQty,    setDamagedQty]    = useState(initDamagedQty)
   const [incompleteQty, setIncompleteQty] = useState(initIncompleteQty)
   const [reason,        setReason]        = useState(initReason)
+  const [breakdown,     setBreakdown]     = useState(initBreakdown)
+  const [showBreakdown, setShowBreakdown] = useState(false)
+  const [newBd,         setNewBd]         = useState({ category: BREAKDOWN_CATEGORIES[0], quantity: '', notes: '' })
   const [saving,        setSaving]        = useState(false)
 
   // Sync local state when detail prop changes (after parent refreshes)
@@ -650,17 +686,37 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
     setDamagedQty(String(detail.damaged_qty ?? 0))
     setIncompleteQty(String(detail.incomplete_qty ?? 0))
     setReason(detail.reason || '')
-  }, [detail.good_qty, detail.damaged_qty, detail.incomplete_qty, detail.reason, detail.physical_qty])
+    setBreakdown((detail.breakdown || []).map(b => ({ category: b.category, quantity: b.quantity, notes: b.notes || '' })))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail.good_qty, detail.damaged_qty, detail.incomplete_qty, detail.reason, detail.physical_qty, detail.breakdown])
+
+  const liveVariance = parseFloat(goodQty    || 0) - detail.system_qty
+  const livePhysical = parseFloat(goodQty    || 0) + parseFloat(damagedQty || 0) + parseFloat(incompleteQty || 0)
+
+  const breakdownTotal    = breakdown.reduce((s, b) => s + (parseInt(b.quantity) || 0), 0)
+  const expectedBreakdown = Math.abs(liveVariance)
+  const breakdownValid    = breakdown.length === 0 || breakdownTotal === expectedBreakdown
+
+  const breakdownChanged = JSON.stringify(breakdown) !== JSON.stringify(initBreakdown)
 
   const dirty = (
     goodQty       !== String(detail.good_qty       ?? detail.physical_qty ?? 0) ||
     damagedQty    !== String(detail.damaged_qty    ?? 0) ||
     incompleteQty !== String(detail.incomplete_qty ?? 0) ||
-    reason        !== (detail.reason || '')
+    reason        !== (detail.reason || '') ||
+    breakdownChanged
   )
 
-  const liveVariance = parseFloat(goodQty    || 0) - detail.system_qty
-  const livePhysical = parseFloat(goodQty    || 0) + parseFloat(damagedQty || 0) + parseFloat(incompleteQty || 0)
+  const addBreakdownRow = () => {
+    const qty = parseInt(newBd.quantity)
+    if (!qty || qty <= 0) return
+    setBreakdown(b => [...b, { category: newBd.category, quantity: qty, notes: newBd.notes || '' }])
+    setNewBd({ category: BREAKDOWN_CATEGORIES[0], quantity: '', notes: '' })
+  }
+
+  const removeBreakdownRow = (idx) => {
+    setBreakdown(b => b.filter((_, i) => i !== idx))
+  }
 
   const save = async () => {
     const gq = parseInt(goodQty)
@@ -669,8 +725,12 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
     if (isNaN(gq) || gq < 0) return
     if (dq < 0) return
     if (iq < 0) return
+    if (!breakdownValid) return
     setSaving(true)
-    await onUpdate(detail.id, gq, dq, iq, reason || null)
+    const breakdownPayload = breakdownChanged
+      ? breakdown.map(b => ({ category: b.category, quantity: parseInt(b.quantity), notes: b.notes || null }))
+      : undefined
+    await onUpdate(detail.id, gq, dq, iq, reason || null, breakdownPayload)
     setSaving(false)
   }
 
@@ -685,6 +745,7 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
 
   if (editable) {
     return (
+      <>
       <tr style={{ background: dirty ? '#fffbeb' : undefined, transition: 'background 0.15s' }}>
         <td style={{ fontWeight: 500 }}>{detail.product?.product_name || `#${detail.product_id}`}</td>
         <td style={{ textAlign: 'right', color: '#475569', fontWeight: 600 }}>
@@ -731,12 +792,28 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
           </select>
         </td>
         <td>
+          {Math.abs(liveVariance) > 0.001 ? (
+            <button
+              onClick={() => setShowBreakdown(s => !s)}
+              style={{
+                padding: '0.2rem 0.5rem', fontSize: '0.72rem', borderRadius: '0.25rem', cursor: 'pointer', fontWeight: 600,
+                background: breakdown.length ? (breakdownValid ? '#dcfce7' : '#fee2e2') : '#f1f5f9',
+                color: breakdown.length ? (breakdownValid ? '#16a34a' : '#dc2626') : '#64748b',
+                border: `1px solid ${breakdown.length ? (breakdownValid ? '#bbf7d0' : '#fecaca') : '#e2e8f0'}`,
+              }}
+            >
+              {breakdown.length ? `${breakdownTotal}/${expectedBreakdown} explained` : 'Explain variance'}
+            </button>
+          ) : <span style={{ color: '#cbd5e1' }}>—</span>}
+        </td>
+        <td>
           <div style={{ display: 'flex', gap: '0.25rem', justifyContent: 'flex-end' }}>
             {dirty && (
               <button
                 onClick={save}
-                disabled={saving}
-                style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: '#dcfce7', color: '#16a34a', border: '1px solid #bbf7d0', borderRadius: '0.25rem', cursor: 'pointer', fontWeight: 600, whiteSpace: 'nowrap' }}
+                disabled={saving || !breakdownValid}
+                title={!breakdownValid ? `Breakdown total (${breakdownTotal}) must equal the variance (${expectedBreakdown})` : undefined}
+                style={{ padding: '0.2rem 0.5rem', fontSize: '0.72rem', background: breakdownValid ? '#dcfce7' : '#f1f5f9', color: breakdownValid ? '#16a34a' : '#94a3b8', border: `1px solid ${breakdownValid ? '#bbf7d0' : '#e2e8f0'}`, borderRadius: '0.25rem', cursor: breakdownValid ? 'pointer' : 'not-allowed', fontWeight: 600, whiteSpace: 'nowrap' }}
               >
                 {saving ? '...' : 'Save'}
               </button>
@@ -748,6 +825,53 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
           </div>
         </td>
       </tr>
+      {showBreakdown && (
+        <tr>
+          <td colSpan={10} style={{ background: '#f8fafc', padding: '0.75rem 1rem' }}>
+            <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#475569', marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.03em' }}>
+              Variance Breakdown — must total {expectedBreakdown} (currently {breakdownTotal})
+            </div>
+            {breakdown.length > 0 && (
+              <table style={{ width: '100%', marginBottom: '0.5rem', fontSize: '0.78rem' }}>
+                <tbody>
+                  {breakdown.map((b, idx) => (
+                    <tr key={idx}>
+                      <td style={{ padding: '0.2rem 0.4rem' }}>{b.category}</td>
+                      <td style={{ padding: '0.2rem 0.4rem', textAlign: 'right', fontWeight: 600 }}>{b.quantity}</td>
+                      <td style={{ padding: '0.2rem 0.4rem', color: '#64748b' }}>{b.notes || '—'}</td>
+                      <td style={{ padding: '0.2rem 0.4rem', textAlign: 'right' }}>
+                        <button onClick={() => removeBreakdownRow(idx)} style={{ background: 'none', border: 'none', color: '#dc2626', cursor: 'pointer', fontWeight: 700 }}>✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+              <select value={newBd.category} onChange={e => setNewBd(n => ({ ...n, category: e.target.value }))}
+                style={{ fontSize: '0.78rem', padding: '0.25rem 0.4rem', border: '1px solid #d1d5db', borderRadius: '0.375rem' }}>
+                {BREAKDOWN_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+              </select>
+              <input type="number" min="1" step="1" placeholder="Qty" value={newBd.quantity}
+                onChange={e => setNewBd(n => ({ ...n, quantity: e.target.value }))}
+                style={{ width: '70px', fontSize: '0.78rem', padding: '0.25rem 0.4rem', border: '1px solid #d1d5db', borderRadius: '0.375rem' }} />
+              <input type="text" placeholder="Notes (optional)" value={newBd.notes}
+                onChange={e => setNewBd(n => ({ ...n, notes: e.target.value }))}
+                style={{ flex: 1, minWidth: '140px', fontSize: '0.78rem', padding: '0.25rem 0.4rem', border: '1px solid #d1d5db', borderRadius: '0.375rem' }} />
+              <button type="button" onClick={addBreakdownRow}
+                style={{ padding: '0.25rem 0.6rem', fontSize: '0.75rem', background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe', borderRadius: '0.375rem', cursor: 'pointer', fontWeight: 600 }}>
+                + Add
+              </button>
+            </div>
+            {!breakdownValid && (
+              <div style={{ marginTop: '0.4rem', fontSize: '0.75rem', color: '#dc2626', fontWeight: 600 }}>
+                Total must equal {expectedBreakdown} before this line can be saved.
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+      </>
     )
   }
 
@@ -771,6 +895,11 @@ function DetailRow({ detail, editable, reasons, onUpdate, onDelete }) {
       <td style={{ textAlign: 'right', color: '#64748b', fontSize: '0.75rem' }}>{formatNumber(physicalTotal)}</td>
       <td style={{ textAlign: 'right' }}><VarianceBadge diff={detail.difference_qty} /></td>
       <td style={{ fontSize: '0.75rem', color: '#64748b' }}>{detail.reason || '—'}</td>
+      <td style={{ fontSize: '0.75rem', color: '#64748b' }}>
+        {(detail.breakdown && detail.breakdown.length > 0)
+          ? detail.breakdown.map(b => `${b.category}: ${b.quantity}`).join(', ')
+          : '—'}
+      </td>
     </tr>
   )
 }

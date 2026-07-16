@@ -8,8 +8,18 @@ from ..models.user import User
 from ..schemas.bank_account import BankAccountCreate, BankAccountUpdate, BankAccountResponse
 from ..services.auth import get_current_user
 from ..services.permissions import require_permission
+from ..utils.xlsx import xlsx_response
 
 router = APIRouter(prefix="/bank-accounts", tags=["Bank Accounts"])
+
+
+def _filtered_bank_accounts_query(db: Session, active_only: Optional[bool] = None, search: Optional[str] = None):
+    q = db.query(BankAccount).filter(BankAccount.deleted_at.is_(None))
+    if active_only is True:
+        q = q.filter(BankAccount.is_active == True)
+    if search:
+        q = q.filter(BankAccount.bank_name.ilike(f"%{search}%"))
+    return q.order_by(BankAccount.bank_name)
 
 
 @router.get("", response_model=dict)
@@ -21,13 +31,9 @@ def list_bank_accounts(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    q = db.query(BankAccount).filter(BankAccount.deleted_at.is_(None))
-    if active_only is True:
-        q = q.filter(BankAccount.is_active == True)
-    if search:
-        q = q.filter(BankAccount.bank_name.ilike(f"%{search}%"))
+    q = _filtered_bank_accounts_query(db, active_only, search)
     total = q.count()
-    items = q.order_by(BankAccount.bank_name).offset((page - 1) * limit).limit(limit).all()
+    items = q.offset((page - 1) * limit).limit(limit).all()
     # Serialize ORM objects via Pydantic before returning in a plain dict response
     return {
         "total": total,
@@ -35,6 +41,25 @@ def list_bank_accounts(
         "limit": limit,
         "items": [BankAccountResponse.from_orm(b) for b in items],
     }
+
+
+@router.get("/export")
+def export_bank_accounts(
+    active_only: Optional[bool] = None,
+    search: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Excel export honoring the same filters as list_bank_accounts() above —
+    covers every matching row, not just the current page. Only the columns
+    already shown in the Bank Accounts table are included."""
+    items = _filtered_bank_accounts_query(db, active_only, search).all()
+    headers = ["Bank Name", "Account Number", "Beneficiary Name", "Status"]
+    rows = [
+        [b.bank_name, b.account_number, b.beneficiary_name, "Active" if b.is_active else "Inactive"]
+        for b in items
+    ]
+    return xlsx_response(headers, rows, "bank-accounts-export.xlsx")
 
 
 @router.post("", response_model=BankAccountResponse)

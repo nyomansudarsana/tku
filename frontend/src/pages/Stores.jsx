@@ -5,7 +5,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import SearchBar from '../components/SearchBar'
 import Pagination from '../components/Pagination'
 import { formatDate } from '../utils/format'
-import { exportCsv } from '../utils/exportCsv'
+import { downloadBlob } from '../utils/downloadFile'
 
 const empty = { store_name: '', location: '', description: '' }
 
@@ -20,13 +20,20 @@ export default function Stores() {
   const [deleteId, setDeleteId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const limit = 15
+  const [exporting, setExporting] = useState(false)
+  const [limit, setLimit] = useState(15)
+
+  const buildFilterParams = useCallback(() => {
+    const params = {}
+    if (search) params.search = search
+    return params
+  }, [search])
 
   const load = useCallback(async () => {
-    const res = await storesAPI.list({ search, page, limit })
+    const res = await storesAPI.list({ page, limit, ...buildFilterParams() })
     setItems(res.data.items)
     setTotal(res.data.total)
-  }, [search, page])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
@@ -52,7 +59,17 @@ export default function Stores() {
           <p style={{ color: '#64748b', fontSize: '0.875rem' }}>Manage store locations</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn btn-secondary" onClick={() => exportCsv(items, ['store_name','location','description'], { store_name:'Name', location:'Location', description:'Description' }, 'stores-export')}>Export CSV</button>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await storesAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'stores-export.xlsx')
+            } catch {
+              alert('Failed to export stores.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
           <button className="btn btn-primary" onClick={openCreate}>+ Add Store</button>
         </div>
       </div>
@@ -79,7 +96,8 @@ export default function Stores() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
       <Modal open={modal} onClose={() => setModal(false)} title={editing ? 'Edit Store' : 'Add Store'} size="sm">
         <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>

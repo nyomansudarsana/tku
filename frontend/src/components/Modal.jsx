@@ -1,6 +1,6 @@
 export default function Modal({ open, onClose, title, children, size = 'md' }) {
   if (!open) return null
-  const widths = { sm: '28rem', md: '36rem', lg: '48rem', xl: '60rem' }
+  const widths = { sm: '28rem', md: '36rem', lg: '48rem', xl: '60rem', '2xl': '75rem' }
   return (
     <div
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: '1rem' }}

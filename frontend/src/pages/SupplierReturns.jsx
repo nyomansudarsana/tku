@@ -6,6 +6,7 @@ import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
 import { formatDate, formatNumber } from '../utils/format'
+import { downloadBlob } from '../utils/downloadFile'
 
 const STATUSES = ['Pending', 'Ready To Send', 'Sent To Supplier', 'Completed', 'Cancelled']
 const REASONS = [
@@ -88,6 +89,7 @@ export default function SupplierReturns() {
   const [loading,     setLoading]     = useState(false)
   const [error,       setError]       = useState('')
   const [actionError, setActionError] = useState('')
+  const [exporting,   setExporting]   = useState(false)
 
   // Receiving-first create flow
   const [rcvDate,     setRcvDate]     = useState(today())
@@ -100,17 +102,21 @@ export default function SupplierReturns() {
   const [editSupplierName, setEditSupplierName] = useState('')
   const [editProductName,  setEditProductName]  = useState('')
 
-  const limit = 15
+  const [limit, setLimit] = useState(15)
+
+  const buildFilterParams = useCallback(() => {
+    const params = {}
+    if (filters.status) params.status = filters.status
+    return params
+  }, [filters])
 
   const load = useCallback(async () => {
-    const params = { page, limit }
-    if (filters.status) params.status = filters.status
     try {
-      const res = await supplierReturnsAPI.list(params)
+      const res = await supplierReturnsAPI.list({ page, limit, ...buildFilterParams() })
       setItems(res.data.items || [])
       setTotal(res.data.total || 0)
     } catch { /* handled globally */ }
-  }, [page, filters])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
@@ -475,7 +481,20 @@ export default function SupplierReturns() {
             Track returns to suppliers — fully traceable to originating receiving records
           </p>
         </div>
-        <button className="btn btn-primary" onClick={openCreate}>+ New Return</button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await supplierReturnsAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'supplier-returns-export.xlsx')
+            } catch {
+              alert('Failed to export supplier returns.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
+          <button className="btn btn-primary" onClick={openCreate}>+ New Return</button>
+        </div>
       </div>
 
       {/* Workflow legend */}
@@ -553,7 +572,8 @@ export default function SupplierReturns() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
 
       {/* Create / Edit Modal */}

@@ -127,12 +127,17 @@ def reset_transactions(
 
     backup_path = _create_backup()
 
+    has_sqlite_sequence = db.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'")
+    ).first() is not None
+
     deleted_counts = {}
     try:
         for table in _RESET_TABLES_IN_ORDER:
             result = db.execute(text(f"DELETE FROM {table}"))
             deleted_counts[table] = result.rowcount
-            db.execute(text("DELETE FROM sqlite_sequence WHERE name = :t"), {"t": table})
+            if has_sqlite_sequence:
+                db.execute(text("DELETE FROM sqlite_sequence WHERE name = :t"), {"t": table})
         db.commit()
     except Exception as exc:
         db.rollback()

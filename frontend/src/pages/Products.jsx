@@ -7,7 +7,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import SearchBar from '../components/SearchBar'
 import Pagination from '../components/Pagination'
 import { formatCurrency } from '../utils/format'
-import { exportCsv } from '../utils/exportCsv'
+import { downloadBlob } from '../utils/downloadFile'
 
 const UNITS = ['PCS', 'Pack', 'Unit', 'Box', 'Set', 'Kg', 'Liter']
 const empty = {
@@ -16,7 +16,6 @@ const empty = {
   category_id: '',
   sale_price: '',
   product_description: '',
-  sku: '',
   barcode: '',
   unit: 'PCS',
   status: 'Active',
@@ -36,16 +35,21 @@ export default function Products() {
   const [deleteId, setDeleteId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [saveError, setSaveError] = useState('')
-  const limit = 15
+  const [exporting, setExporting] = useState(false)
+  const [limit, setLimit] = useState(15)
 
-  const load = useCallback(async () => {
-    const params = { search, page, limit }
+  const buildFilterParams = useCallback(() => {
+    const params = { search }
     if (categoryFilter) params.category_id = categoryFilter
     if (statusFilter) params.status = statusFilter
-    const res = await productsAPI.list(params)
+    return params
+  }, [search, categoryFilter, statusFilter])
+
+  const load = useCallback(async () => {
+    const res = await productsAPI.list({ page, limit, ...buildFilterParams() })
     setItems(res.data.items)
     setTotal(res.data.total)
-  }, [search, page, categoryFilter, statusFilter])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
@@ -58,7 +62,6 @@ export default function Products() {
       category_id: item.category_id ? String(item.category_id) : '',
       sale_price: item.sale_price,
       product_description: item.product_description || '',
-      sku: item.sku || '',
       barcode: item.barcode || '',
       unit: item.unit,
       status: item.status,
@@ -79,7 +82,6 @@ export default function Products() {
         category_id: form.category_id ? parseInt(form.category_id) : null,
         sale_price: parseFloat(form.sale_price),
         minimum_stock_level: parseFloat(form.minimum_stock_level) || 0,
-        sku: form.sku.trim() || null,
       }
       if (editing) await productsAPI.update(editing.product_id, data)
       else await productsAPI.create(data)
@@ -98,22 +100,17 @@ export default function Products() {
           <p style={{ color: '#64748b', fontSize: '0.875rem' }}>Manage product catalog</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn btn-secondary" onClick={() => {
-            const rows = items.map(p => ({
-              name: p.product_name,
-              supplier: p.supplier?.supplier_name || '',
-              sku: p.sku || '',
-              category: p.category?.category_name || '',
-              price: p.sale_price,
-              unit: p.unit,
-              status: p.status,
-              description: p.product_description || '',
-            }))
-            exportCsv(rows,
-              ['name','supplier','sku','category','price','unit','status','description'],
-              { name:'Product Name', supplier:'Supplier', sku:'SKU', category:'Category', price:'Sale Price', unit:'Unit', status:'Status', description:'Description' },
-              'products-export')
-          }}>Export CSV</button>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await productsAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'products-export.xlsx')
+            } catch {
+              alert('Failed to export products.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
           <button className="btn btn-primary" onClick={openCreate}>+ Add Product</button>
         </div>
       </div>
@@ -144,16 +141,15 @@ export default function Products() {
           <table className="table">
             <thead>
               <tr>
-                <th>#</th><th>SKU</th><th>Product Name</th><th>Supplier</th><th>Category</th><th>Unit</th><th>Price</th><th>Min Stock</th><th>Status</th><th>Actions</th>
+                <th>#</th><th>Product Name</th><th>Supplier</th><th>Category</th><th>Unit</th><th>Price</th><th>Min Stock</th><th>Status</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
               {items.length === 0
-                ? <tr><td colSpan={10} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>No products found</td></tr>
+                ? <tr><td colSpan={9} style={{ textAlign: 'center', color: '#94a3b8', padding: '2rem' }}>No products found</td></tr>
                 : items.map((item, i) => (
                   <tr key={item.product_id}>
                     <td style={{ color: '#94a3b8' }}>{(page - 1) * limit + i + 1}</td>
-                    <td><code style={{ fontSize: '0.75rem', background: '#f1f5f9', padding: '2px 6px', borderRadius: 4 }}>{item.sku || '-'}</code></td>
                     <td style={{ fontWeight: 500 }}>{item.product_name}</td>
                     <td>
                       {item.supplier
@@ -176,7 +172,8 @@ export default function Products() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
 
       <Modal open={modal} onClose={() => { setModal(false); setSaveError('') }} title={editing ? 'Edit Product' : 'Add Product'} size="lg">
@@ -225,11 +222,6 @@ export default function Products() {
             <div>
               <label className="label">Sale Price (IDR) *</label>
               <input className="input" type="number" required min="0" step="100" value={form.sale_price} onChange={e => setForm(f => ({ ...f, sale_price: e.target.value }))} />
-            </div>
-
-            <div>
-              <label className="label">SKU</label>
-              <input className="input" value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} />
             </div>
 
             <div>

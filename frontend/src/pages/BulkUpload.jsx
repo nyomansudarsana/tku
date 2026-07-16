@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { bulkUploadAPI } from '../api'
+import Pagination from '../components/Pagination'
 import { formatDate } from '../utils/format'
 
 const IMPORT_TYPES = [
@@ -26,18 +27,19 @@ export default function BulkUpload() {
   const [importResult, setImportResult] = useState(null)
   const [history, setHistory] = useState([])
   const [historyPage, setHistoryPage] = useState(1)
+  const [historyLimit, setHistoryLimit] = useState(15)
   const [historyTotal, setHistoryTotal] = useState(0)
   const [error, setError] = useState('')
   const fileRef = useRef()
-  const HIST_LIMIT = 10
 
   useEffect(() => {
     loadHistory()
-  }, [historyPage])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyPage, historyLimit])
 
   const loadHistory = async () => {
     try {
-      const res = await bulkUploadAPI.history({ page: historyPage, limit: HIST_LIMIT })
+      const res = await bulkUploadAPI.history({ page: historyPage, limit: historyLimit })
       setHistory(res.data.items || [])
       setHistoryTotal(res.data.total || 0)
     } catch { /* silent */ }
@@ -290,13 +292,8 @@ export default function BulkUpload() {
                 </tbody>
               </table>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.75rem' }}>
-              <span style={{ fontSize: '0.8rem', color: '#64748b' }}>{historyTotal} total imports</span>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button className="btn btn-secondary btn-sm" disabled={historyPage === 1} onClick={() => setHistoryPage(p => p - 1)}>Prev</button>
-                <button className="btn btn-secondary btn-sm" disabled={historyPage * HIST_LIMIT >= historyTotal} onClick={() => setHistoryPage(p => p + 1)}>Next</button>
-              </div>
-            </div>
+            <Pagination page={historyPage} total={historyTotal} limit={historyLimit} onChange={setHistoryPage}
+              pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setHistoryLimit(v); setHistoryPage(1) }} />
           </>
         )}
       </div>

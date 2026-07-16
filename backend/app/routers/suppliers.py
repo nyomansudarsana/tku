@@ -10,8 +10,16 @@ from ..models.user import User
 from ..schemas.supplier import SupplierCreate, SupplierUpdate, SupplierResponse
 from ..services.auth import get_current_user
 from ..services.permissions import require_permission
+from ..utils.xlsx import xlsx_response
 
 router = APIRouter(prefix="/suppliers", tags=["Suppliers"])
+
+
+def _filtered_supplier_query(db: Session, search: Optional[str] = None):
+    q = db.query(Supplier).filter(Supplier.deleted_at.is_(None))
+    if search:
+        q = q.filter(Supplier.supplier_name.ilike(f"%{search}%"))
+    return q
 
 
 @router.get("", response_model=dict)
@@ -22,12 +30,27 @@ def list_suppliers(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    q = db.query(Supplier).filter(Supplier.deleted_at.is_(None))
-    if search:
-        q = q.filter(Supplier.supplier_name.ilike(f"%{search}%"))
+    q = _filtered_supplier_query(db, search)
     total = q.count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     return {"total": total, "page": page, "limit": limit, "items": [SupplierResponse.from_orm(s) for s in items]}
+
+
+@router.get("/export")
+def export_suppliers(
+    search: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Excel export honoring the same filters as list_suppliers() above —
+    covers every matching row, not just the current page."""
+    items = _filtered_supplier_query(db, search).all()
+    headers = ["Supplier Name", "Contact", "Email", "Address"]
+    rows = [
+        [s.supplier_name, s.supplier_contact or "", s.supplier_email or "", s.supplier_address or ""]
+        for s in items
+    ]
+    return xlsx_response(headers, rows, "suppliers-export.xlsx")
 
 
 @router.post("", response_model=SupplierResponse)
@@ -94,7 +117,6 @@ def list_supplier_products(
             "id": lnk.id,
             "product_id": lnk.product_id,
             "product_name": lnk.product.product_name if lnk.product else None,
-            "sku": lnk.product.sku if lnk.product else None,
             "cost_price": lnk.cost_price,
         }
         for lnk in links

@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
-import { stockMovementsAPI } from '../api'
+import { stockMovementsAPI, productsAPI } from '../api'
 import AsyncDropdown from '../components/AsyncDropdown'
+import SearchableSelect from '../components/SearchableSelect'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
 import { formatDate, formatNumber } from '../utils/format'
-import { exportCsv } from '../utils/exportCsv'
+import { downloadBlob } from '../utils/downloadFile'
 
 // Stock Movement now only tracks warehouse-to-warehouse transfers — Receiving
 // handles incoming stock, Sales handles outgoing stock, Returns handle return
@@ -38,19 +39,25 @@ export default function StockMovement() {
   const [deleteId, setDeleteId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const limit = 20
+  const [available, setAvailable] = useState(null)
+  const [exporting, setExporting] = useState(false)
+  const [limit, setLimit] = useState(20)
+
+  const buildFilterParams = useCallback(() => {
+    const params = {}
+    if (typeFilter) params.movement_type = typeFilter
+    return params
+  }, [typeFilter])
 
   const load = useCallback(async () => {
-    const params = { page, limit }
-    if (typeFilter) params.movement_type = typeFilter
-    const res = await stockMovementsAPI.list(params)
+    const res = await stockMovementsAPI.list({ page, limit, ...buildFilterParams() })
     setItems(res.data.items)
     setTotal(res.data.total)
-  }, [page, typeFilter])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
-  const openCreate = () => { setEditing(null); setForm(empty); setError(''); setModal(true) }
+  const openCreate = () => { setEditing(null); setForm(empty); setError(''); setAvailable(null); setModal(true) }
   const openEdit = (item) => {
     setEditing(item)
     setForm({
@@ -63,8 +70,24 @@ export default function StockMovement() {
       remark: item.remark || '',
     })
     setError('')
+    setAvailable(null)
     setModal(true)
   }
+
+  // Fetch available qty at the source warehouse whenever product/warehouse changes
+  useEffect(() => {
+    if (!form.product_id || !form.from_warehouse_id) { setAvailable(null); return }
+    let cancelled = false
+    productsAPI.getAvailableStock(form.product_id, { warehouse_id: form.from_warehouse_id })
+      .then(res => {
+        if (cancelled) return
+        const byWh = res.data.by_warehouse || []
+        const wh = byWh.find(w => String(w.warehouse_id) === String(form.from_warehouse_id))
+        setAvailable(wh ? wh.available : res.data.total_available)
+      })
+      .catch(() => { if (!cancelled) setAvailable(null) })
+    return () => { cancelled = true }
+  }, [form.product_id, form.from_warehouse_id])
 
   const handleSave = async (e) => {
     e.preventDefault()
@@ -106,10 +129,17 @@ export default function StockMovement() {
           <p style={{ color: '#64748b', fontSize: '0.875rem' }}>Warehouse-to-warehouse transfers — Receiving/Sales/Returns/Opname handle every other stock change</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn btn-secondary" onClick={() => {
-            const rows = items.map(m => ({ date: m.movement_date, product: m.product?.product_name || '', type: m.movement_type, qty: m.quantity, from: m.from_warehouse?.warehouse_name || '', to: m.to_warehouse?.warehouse_name || '', remark: m.remark || '' }))
-            exportCsv(rows, ['date','product','type','qty','from','to','remark'], { date:'Date', product:'Product', type:'Type', qty:'Quantity', from:'From Warehouse', to:'To Warehouse', remark:'Remark' }, 'stock-movements-export')
-          }}>Export CSV</button>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await stockMovementsAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'stock-movements-export.xlsx')
+            } catch {
+              alert('Failed to export stock movements.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
           <button className="btn btn-primary" onClick={openCreate}>+ New Movement</button>
         </div>
       </div>
@@ -158,7 +188,8 @@ export default function StockMovement() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
 
       {/* Form Modal */}
@@ -177,26 +208,6 @@ export default function StockMovement() {
                 onChange={e => setForm(f => ({ ...f, movement_date: e.target.value }))} />
             </div>
 
-            <div style={{ gridColumn: '1 / -1' }}>
-              <label className="label">Product *</label>
-              <AsyncDropdown
-                endpoint="/products"
-                labelField="product_name"
-                valueField="product_id"
-                value={form.product_id}
-                onChange={v => setForm(f => ({ ...f, product_id: v }))}
-                placeholder="Select product..."
-                required
-                emptyHint="No products found — add products in Master Data first"
-              />
-            </div>
-
-            <div style={{ gridColumn: '1 / -1' }}>
-              <label className="label">Quantity *</label>
-              <input className="input" type="number" required min="1" step="1" value={form.quantity}
-                onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
-            </div>
-
             <div>
               <label className="label">From Warehouse *</label>
               <AsyncDropdown
@@ -204,7 +215,7 @@ export default function StockMovement() {
                 labelField="warehouse_name"
                 valueField="warehouse_id"
                 value={form.from_warehouse_id}
-                onChange={v => setForm(f => ({ ...f, from_warehouse_id: v }))}
+                onChange={v => setForm(f => ({ ...f, from_warehouse_id: v, product_id: '' }))}
                 placeholder="Select warehouse..."
                 required
                 emptyHint="No warehouses found"
@@ -229,6 +240,36 @@ export default function StockMovement() {
                 From and To warehouse must be different.
               </div>
             )}
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="label">Product *</label>
+              <SearchableSelect
+                key={form.from_warehouse_id || 'no-warehouse'}
+                endpoint="/products"
+                labelField="product_name"
+                valueField="product_id"
+                params={form.from_warehouse_id
+                  ? { status: 'Active', in_stock_only: true, warehouse_id: form.from_warehouse_id }
+                  : { status: 'Active' }}
+                value={form.product_id}
+                onChange={v => setForm(f => ({ ...f, product_id: v }))}
+                placeholder={form.from_warehouse_id ? 'Search product in this warehouse...' : 'Select From Warehouse first...'}
+                disabled={!form.from_warehouse_id}
+                required
+                emptyHint="No products with available stock in this warehouse"
+              />
+            </div>
+
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label className="label">Quantity *</label>
+              <input className="input" type="number" required min="1" step="1" value={form.quantity}
+                onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
+              {available !== null && (
+                <p style={{ fontSize: '0.75rem', marginTop: '0.25rem', color: (parseFloat(form.quantity) || 0) <= available ? '#16a34a' : '#dc2626', fontWeight: 600 }}>
+                  Available at source warehouse: {formatNumber(available)}
+                </p>
+              )}
+            </div>
 
             <div style={{ gridColumn: '1 / -1' }}>
               <label className="label">Remark</label>

@@ -21,16 +21,26 @@ def update_inventory_balance(
     and apply qty_in/qty_out to it, writing a matching InventoryLedger row.
 
     Costing: Inventory.avg_cost is a running weighted-average cost per unit.
-    It is recomputed ONLY when transaction_type == "RECEIVING" and
-    unit_cost_override (the receiving's purchase_price) is provided:
+    It is recomputed whenever a caller supplies unit_cost_override alongside
+    qty_in > 0 — originally this was gated to transaction_type == "RECEIVING"
+    only, which left every OTHER qty_in path (Stock Movement transfers, Sales
+    Return restocks, Stock Opname positive adjustments) permanently stamping
+    a brand-new bucket at avg_cost=0 the first time it was touched, since
+    nothing ever revisited it afterwards. Any caller that knows the correct
+    cost for the stock it's adding (Receiving's purchase_price, a Transfer's
+    source-bucket avg_cost, a Sales Return's originating sale cost) should
+    pass unit_cost_override so the bucket's cost basis stays correct from
+    the moment it's created:
 
         new_avg = (old_qty * old_avg + qty_in * unit_cost_override) / (old_qty + qty_in)
 
     falling back to new_avg = unit_cost_override when old_qty <= 0 (new bucket or
     stock had gone to zero) to avoid division-by-zero and stale-cost carryover.
-    All other transaction types leave avg_cost untouched — the ledger row's
-    unit_cost/total_value are stamped from the (possibly just-updated) avg_cost
-    so callers (sales, damage) can read it back immediately after this call.
+    Callers that don't pass unit_cost_override (Sales/Damaged/Supplier Return/
+    Transfer-Out/Exchange-Out are qty_out-only anyway) leave avg_cost
+    untouched — the ledger row's unit_cost/total_value are stamped from the
+    (possibly just-updated) avg_cost so callers can read it back immediately
+    after this call.
     """
     inventory = db.query(Inventory).filter(
         Inventory.product_id == product_id,
@@ -51,7 +61,7 @@ def update_inventory_balance(
         db.add(inventory)
         db.flush()
 
-    if transaction_type == "RECEIVING" and unit_cost_override is not None and qty_in > 0:
+    if unit_cost_override is not None and qty_in > 0:
         old_qty = inventory.quantity or 0
         if old_qty <= 0:
             inventory.avg_cost = unit_cost_override

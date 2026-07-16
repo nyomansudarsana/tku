@@ -5,7 +5,7 @@ from sqlalchemy import func
 from typing import Optional, List
 from datetime import datetime, date
 from ..database import get_db
-from ..models.stock_opname import StockOpname, StockOpnameDetail
+from ..models.stock_opname import StockOpname, StockOpnameDetail, StockOpnameDetailBreakdown
 from ..models.inventory import Inventory
 from ..models.damaged_stock import DamagedStock
 from ..models.product import Product
@@ -19,9 +19,38 @@ from ..services.auth import get_current_user
 from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
 from ..constants import DEFAULT_INVENTORY_TYPE
+from ..utils.xlsx import xlsx_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/stock-opnames", tags=["Stock Opname"])
+
+
+def _apply_breakdown(db: Session, detail: StockOpnameDetail, breakdown_items, difference_qty: int) -> None:
+    """
+    Replace a detail line's variance breakdown rows. Purely explanatory
+    metadata — quantities must sum to the absolute variance, but this never
+    changes good_qty/damaged_qty/incomplete_qty or the inventory postings
+    that key off them.
+    """
+    if breakdown_items is None:
+        return
+    total = sum(item.quantity for item in breakdown_items)
+    expected = abs(difference_qty)
+    if total != expected:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Variance breakdown quantities must sum to {expected} (the line's variance), got {total}.",
+        )
+    db.query(StockOpnameDetailBreakdown).filter(
+        StockOpnameDetailBreakdown.opname_detail_id == detail.id
+    ).delete(synchronize_session=False)
+    for item in breakdown_items:
+        db.add(StockOpnameDetailBreakdown(
+            opname_detail_id=detail.id,
+            category=item.category,
+            quantity=item.quantity,
+            notes=item.notes,
+        ))
 
 
 def _load_opname(db, opname_id: int):
@@ -29,6 +58,7 @@ def _load_opname(db, opname_id: int):
         joinedload(StockOpname.warehouse),
         joinedload(StockOpname.store),
         joinedload(StockOpname.details).joinedload(StockOpnameDetail.product),
+        joinedload(StockOpname.details).joinedload(StockOpnameDetail.breakdown),
     ).filter(
         StockOpname.opname_id == opname_id,
         StockOpname.deleted_at.is_(None),
@@ -37,16 +67,12 @@ def _load_opname(db, opname_id: int):
 
 # ── Header CRUD ───────────────────────────────────────────────────────────────
 
-@router.get("", response_model=dict)
-def list_opnames(
+def _filtered_opname_query(
+    db: Session,
     warehouse_id: Optional[int] = None,
     status:       Optional[str] = None,
     date_from:    Optional[date] = None,
     date_to:      Optional[date] = None,
-    page:         int = Query(1, ge=1),
-    limit:        int = Query(20, ge=1, le=200),
-    current_user: User = Depends(require_permission("stock_opname.view")),
-    db: Session = Depends(get_db),
 ):
     q = db.query(StockOpname).options(
         joinedload(StockOpname.warehouse),
@@ -62,7 +88,21 @@ def list_opnames(
     if date_to:
         q = q.filter(StockOpname.opname_date <= date_to)
 
-    q = q.order_by(StockOpname.opname_date.desc(), StockOpname.opname_id.desc())
+    return q.order_by(StockOpname.opname_date.desc(), StockOpname.opname_id.desc())
+
+
+@router.get("", response_model=dict)
+def list_opnames(
+    warehouse_id: Optional[int] = None,
+    status:       Optional[str] = None,
+    date_from:    Optional[date] = None,
+    date_to:      Optional[date] = None,
+    page:         int = Query(1, ge=1),
+    limit:        int = Query(20, ge=1, le=200),
+    current_user: User = Depends(require_permission("stock_opname.view")),
+    db: Session = Depends(get_db),
+):
+    q = _filtered_opname_query(db, warehouse_id, status, date_from, date_to)
     total = q.count()
     items = q.offset((page - 1) * limit).limit(limit).all()
 
@@ -72,6 +112,35 @@ def list_opnames(
         d.detail_count = len(op.details) if op.details else 0
         result.append(d)
     return {"total": total, "page": page, "limit": limit, "items": result}
+
+
+@router.get("/export")
+def export_opnames(
+    warehouse_id: Optional[int] = None,
+    status:       Optional[str] = None,
+    date_from:    Optional[date] = None,
+    date_to:      Optional[date] = None,
+    current_user: User = Depends(require_permission("stock_opname.view")),
+    db: Session = Depends(get_db),
+):
+    """Excel export honoring the same filters as list_opnames() above — one
+    row per opname line (product), covering every matching opname, not just
+    the current page."""
+    opnames = _filtered_opname_query(db, warehouse_id, status, date_from, date_to).options(
+        joinedload(StockOpname.details).joinedload(StockOpnameDetail.product),
+    ).all()
+    headers = ["Opname Date", "Warehouse", "Status", "Product", "System Qty", "Physical Qty",
+               "Variance", "Reason", "Remarks", "Performed By", "Approved By"]
+    rows = []
+    for op in opnames:
+        for d in (op.details or []):
+            rows.append([
+                str(op.opname_date), op.warehouse.warehouse_name if op.warehouse else "", op.status,
+                d.product.product_name if d.product else f"#{d.product_id}",
+                d.system_qty, d.physical_qty, d.difference_qty, d.reason or "", d.remarks or "",
+                op.performed_by or "", op.approved_by or "",
+            ])
+    return xlsx_response(headers, rows, "stock-opname-export.xlsx")
 
 
 @router.post("", response_model=StockOpnameResponse)
@@ -212,10 +281,15 @@ def add_detail(
         remarks=data.remarks,
     )
     db.add(detail)
+    db.flush()  # get detail.id before writing breakdown rows
+
+    _apply_breakdown(db, detail, data.breakdown, diff)
+
     db.commit()
     db.refresh(detail)
     return db.query(StockOpnameDetail).options(
-        joinedload(StockOpnameDetail.product)
+        joinedload(StockOpnameDetail.product),
+        joinedload(StockOpnameDetail.breakdown),
     ).filter(StockOpnameDetail.id == detail.id).first()
 
 
@@ -257,10 +331,14 @@ def update_detail(
     # Recompute derived fields
     detail.physical_qty   = detail.good_qty + detail.damaged_qty + detail.incomplete_qty
     detail.difference_qty = detail.good_qty - detail.system_qty
+    db.flush()
+
+    _apply_breakdown(db, detail, data.breakdown, detail.difference_qty)
 
     db.commit()
     return db.query(StockOpnameDetail).options(
-        joinedload(StockOpnameDetail.product)
+        joinedload(StockOpnameDetail.product),
+        joinedload(StockOpnameDetail.breakdown),
     ).filter(StockOpnameDetail.id == detail_id).first()
 
 

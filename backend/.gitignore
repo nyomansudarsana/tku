@@ -3,6 +3,9 @@
 *.db-shm
 *.db-wal
 
+# Dev-server port sync (written by run.py, read by frontend/vite.config.js)
+.dev-port
+
 # Python
 __pycache__/
 *.py[cod]

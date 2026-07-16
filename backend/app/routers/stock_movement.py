@@ -11,6 +11,7 @@ from ..services.auth import get_current_user
 from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
 from ..constants import DEFAULT_INVENTORY_TYPE
+from ..utils.xlsx import xlsx_response
 
 router = APIRouter(prefix="/stock-movements", tags=["Stock Movement"])
 
@@ -23,16 +24,12 @@ def load_movement(db, movement_id):
     ).filter(StockMovement.movement_id == movement_id, StockMovement.deleted_at.is_(None)).first()
 
 
-@router.get("", response_model=dict)
-def list_movements(
+def _filtered_movement_query(
+    db: Session,
     product_id: Optional[int] = None,
     movement_type: Optional[str] = None,
     date_from: Optional[date] = None,
     date_to: Optional[date] = None,
-    page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=2000),
-    current_user: User = Depends(require_permission("stock_movement.view")),
-    db: Session = Depends(get_db)
 ):
     q = db.query(StockMovement).options(
         joinedload(StockMovement.product),
@@ -47,10 +44,46 @@ def list_movements(
         q = q.filter(StockMovement.movement_date >= date_from)
     if date_to:
         q = q.filter(StockMovement.movement_date <= date_to)
-    q = q.order_by(StockMovement.movement_date.desc())
+    return q.order_by(StockMovement.movement_date.desc())
+
+
+@router.get("", response_model=dict)
+def list_movements(
+    product_id: Optional[int] = None,
+    movement_type: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=2000),
+    current_user: User = Depends(require_permission("stock_movement.view")),
+    db: Session = Depends(get_db)
+):
+    q = _filtered_movement_query(db, product_id, movement_type, date_from, date_to)
     total = q.count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     return {"total": total, "page": page, "limit": limit, "items": [StockMovementResponse.from_orm(m) for m in items]}
+
+
+@router.get("/export")
+def export_movements(
+    product_id: Optional[int] = None,
+    movement_type: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
+    current_user: User = Depends(require_permission("stock_movement.view")),
+    db: Session = Depends(get_db)
+):
+    """Excel export honoring the same filters as list_movements() above —
+    covers every matching row, not just the current page."""
+    items = _filtered_movement_query(db, product_id, movement_type, date_from, date_to).all()
+    headers = ["Date", "Product", "Type", "Quantity", "From Warehouse", "To Warehouse", "Remark"]
+    rows = [
+        [str(m.movement_date), m.product.product_name if m.product else "", m.movement_type, m.quantity,
+         m.from_warehouse.warehouse_name if m.from_warehouse else "",
+         m.to_warehouse.warehouse_name if m.to_warehouse else "", m.remark or ""]
+        for m in items
+    ]
+    return xlsx_response(headers, rows, "stock-movements-export.xlsx")
 
 
 @router.post("", response_model=StockMovementResponse)
@@ -83,8 +116,14 @@ def create_movement(data: StockMovementCreate, current_user: User = Depends(requ
     db.flush()
 
     ref = f"MOV-{movement.movement_id}"
+    # Transferred stock originates from the same receiving batches as the
+    # source bucket — it must carry the same cost basis, not reset to 0.
+    source_cost = inv.avg_cost if inv else None
     update_inventory_balance(db, data.product_id, data.from_warehouse_id, 0, data.quantity, "TRANSFER_OUT", ref, created_by=current_user.username)
-    update_inventory_balance(db, data.product_id, data.to_warehouse_id, data.quantity, 0, "TRANSFER_IN", ref, created_by=current_user.username)
+    update_inventory_balance(
+        db, data.product_id, data.to_warehouse_id, data.quantity, 0, "TRANSFER_IN", ref,
+        unit_cost_override=source_cost, created_by=current_user.username,
+    )
 
     db.commit()
     return load_movement(db, movement.movement_id)

@@ -17,6 +17,7 @@ from ..services.auth import get_current_user
 from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
 from ..constants import DEFAULT_INVENTORY_TYPE
+from ..utils.xlsx import xlsx_response
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,9 @@ def _compute_header_totals(details: list) -> dict:
         "discount_amount": round(discount_amount, 2),
         "vat_amount":      round(vat_amount, 2),
         "grand_total":     round(grand_total, 2),
+        # VAT-excluded, discount-net total for the Order Summary's "Subtotal
+        # (Basic Price)" row — grand_total is already discounted-base × 1.11.
+        "basic_subtotal":  round(grand_total - vat_amount, 2),
         "tax_amount":      round(vat_amount, 2),  # legacy
     }
 
@@ -218,19 +222,17 @@ def _load_sale(db: Session, sales_id: int) -> Sales:
 
 # ── List ──────────────────────────────────────────────────────────────────────
 
-@router.get("", response_model=dict)
-def list_sales(
-    store_id:         Optional[int]  = None,
-    product_id:       Optional[int]  = None,
-    payment_method:   Optional[str]  = None,
-    payment_status:   Optional[str]  = None,
-    date_from:        Optional[date] = None,
-    date_to:          Optional[date] = None,
-    page:             int = Query(1, ge=1),
-    limit:            int = Query(20, ge=1, le=2000),
-    current_user:     User    = Depends(require_permission("sales.view")),
-    db:               Session = Depends(get_db),
+def _filtered_sales_query(
+    db: Session,
+    store_id: Optional[int] = None,
+    product_id: Optional[int] = None,
+    payment_method: Optional[str] = None,
+    payment_status: Optional[str] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
 ):
+    """Shared filter-building logic for list_sales() and the filtered export
+    endpoint below — keeps both in sync on exactly which sales qualify."""
     q = (
         db.query(Sales)
         .options(
@@ -262,8 +264,23 @@ def list_sales(
         q = q.filter(Sales.sales_date >= date_from)
     if date_to:
         q = q.filter(Sales.sales_date <= date_to)
+    return q.order_by(Sales.sales_date.desc(), Sales.sales_id.desc())
 
-    q = q.order_by(Sales.sales_date.desc(), Sales.sales_id.desc())
+
+@router.get("", response_model=dict)
+def list_sales(
+    store_id:         Optional[int]  = None,
+    product_id:       Optional[int]  = None,
+    payment_method:   Optional[str]  = None,
+    payment_status:   Optional[str]  = None,
+    date_from:        Optional[date] = None,
+    date_to:          Optional[date] = None,
+    page:             int = Query(1, ge=1),
+    limit:            int = Query(20, ge=1, le=2000),
+    current_user:     User    = Depends(require_permission("sales.view")),
+    db:               Session = Depends(get_db),
+):
+    q = _filtered_sales_query(db, store_id, product_id, payment_method, payment_status, date_from, date_to)
     total = q.count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     return {
@@ -272,6 +289,38 @@ def list_sales(
         "limit": limit,
         "items": [SalesResponse.from_orm(s) for s in items],
     }
+
+
+@router.get("/export")
+def export_sales(
+    store_id:         Optional[int]  = None,
+    product_id:       Optional[int]  = None,
+    payment_method:   Optional[str]  = None,
+    payment_status:   Optional[str]  = None,
+    date_from:        Optional[date] = None,
+    date_to:          Optional[date] = None,
+    current_user:     User    = Depends(require_permission("sales.view")),
+    db:               Session = Depends(get_db),
+):
+    """Excel export of the Sales list honoring the exact same filters as
+    list_sales() above — unlike the old client-side CSV export, this covers
+    every matching row, not just the current page."""
+    q = _filtered_sales_query(db, store_id, product_id, payment_method, payment_status, date_from, date_to)
+    sales = q.all()
+
+    def products_label(sale):
+        if sale.details:
+            return ", ".join(d.product.product_name if d.product else f"#{d.product_id}" for d in sale.details)
+        return sale.product.product_name if sale.product else "—"
+
+    headers = ["Date", "Store", "Customer", "Customer Type", "Products", "Grand Total", "Shipping Cost", "Method", "Status", "Remarks"]
+    rows = [
+        [str(s.sales_date), s.store.store_name if s.store else "", s.customer_name or "",
+         s.customer_type, products_label(s), s.final_total, s.shipping_cost,
+         s.payment_method, s.payment_status, s.remarks or ""]
+        for s in sales
+    ]
+    return xlsx_response(headers, rows, "sales-export.xlsx")
 
 
 # ── Create ────────────────────────────────────────────────────────────────────
@@ -325,6 +374,8 @@ def create_sale(
         store_id           = data.store_id,
         warehouse_id       = data.warehouse_id,
         customer_name      = data.customer_name,
+        customer_type      = data.customer_type,
+        shipping_cost      = data.shipping_cost,
         payment_method     = data.payment_method,
         payment_status     = data.payment_status,
         remarks            = data.remarks,
@@ -333,6 +384,7 @@ def create_sale(
         edc_receipt_number = data.edc_receipt_number,
         edc_special_code   = data.edc_special_code,
         subtotal           = 0,
+        basic_subtotal     = 0,
         discount_amount    = 0,
         vat_amount         = 0,
         grand_total        = 0,
@@ -435,6 +487,7 @@ def update_sale(
     # Update header-only fields (non-detail fields)
     header_fields = [
         "sales_date", "store_id", "warehouse_id", "customer_name",
+        "customer_type", "shipping_cost",
         "payment_method", "payment_status", "remarks",
         "bank_account_id", "transfer_reference", "edc_receipt_number", "edc_special_code",
     ]

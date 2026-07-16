@@ -14,6 +14,7 @@ from ..schemas.receiving import ReceivingCreate, ReceivingUpdate, ReceivingRespo
 from ..services.auth import get_current_user
 from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
+from ..utils.xlsx import xlsx_response
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/receivings", tags=["Receiving"])
@@ -132,17 +133,12 @@ def load_receiving(db, receiving_id):
     ).filter(Receiving.receiving_id == receiving_id, Receiving.deleted_at.is_(None)).first()
 
 
-@router.get("", response_model=dict)
-def list_receivings(
-    search:       Optional[str]  = None,
-    supplier_id:  Optional[int]  = None,
-    date_from:    Optional[date] = None,
-    date_to:      Optional[date] = None,
+def _filtered_receiving_query(
+    db: Session,
+    supplier_id: Optional[int] = None,
+    date_from: Optional[date] = None,
+    date_to: Optional[date] = None,
     has_rejected: Optional[bool] = None,
-    page:         int = Query(1, ge=1),
-    limit:        int = Query(20, ge=1, le=2000),
-    current_user: User = Depends(require_permission("receiving.view")),
-    db: Session = Depends(get_db)
 ):
     q = db.query(Receiving).options(
         joinedload(Receiving.supplier),
@@ -157,7 +153,22 @@ def list_receivings(
         q = q.filter(Receiving.received_date <= date_to)
     if has_rejected:
         q = q.filter(Receiving.quantity_rejected > 0)
-    q = q.order_by(Receiving.received_date.desc())
+    return q.order_by(Receiving.received_date.desc())
+
+
+@router.get("", response_model=dict)
+def list_receivings(
+    search:       Optional[str]  = None,
+    supplier_id:  Optional[int]  = None,
+    date_from:    Optional[date] = None,
+    date_to:      Optional[date] = None,
+    has_rejected: Optional[bool] = None,
+    page:         int = Query(1, ge=1),
+    limit:        int = Query(20, ge=1, le=2000),
+    current_user: User = Depends(require_permission("receiving.view")),
+    db: Session = Depends(get_db)
+):
+    q = _filtered_receiving_query(db, supplier_id, date_from, date_to, has_rejected)
     total = q.count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     serialized = []
@@ -167,6 +178,30 @@ def list_receivings(
         except Exception as exc:
             logger.warning("Skipping receiving_id=%s during serialization: %s", r.receiving_id, exc)
     return {"total": total, "page": page, "limit": limit, "items": serialized}
+
+
+@router.get("/export")
+def export_receivings(
+    supplier_id:  Optional[int]  = None,
+    date_from:    Optional[date] = None,
+    date_to:      Optional[date] = None,
+    has_rejected: Optional[bool] = None,
+    current_user: User = Depends(require_permission("receiving.view")),
+    db: Session = Depends(get_db)
+):
+    """Excel export honoring the same filters as list_receivings() above —
+    covers every matching row, not just the current page."""
+    items = _filtered_receiving_query(db, supplier_id, date_from, date_to, has_rejected).all()
+    headers = ["Date", "Supplier", "Product", "Warehouse", "Received", "Accepted", "Rejected",
+               "Unit", "Purchase Price", "Inventory Type", "Notes"]
+    rows = [
+        [str(r.received_date), r.supplier.supplier_name if r.supplier else "",
+         r.product.product_name if r.product else "", r.warehouse.warehouse_name if r.warehouse else "",
+         r.quantity_received, r.quantity_accepted, r.quantity_rejected, r.unit,
+         r.purchase_price, r.inventory_type, r.notes or ""]
+        for r in items
+    ]
+    return xlsx_response(headers, rows, "receiving-export.xlsx")
 
 
 @router.post("", response_model=ReceivingResponse)
@@ -184,20 +219,24 @@ def create_receiving(
     Inventory is updated with quantity_accepted (not quantity_received).
     A SupplierReturn is auto-created when quantity_rejected > 0.
     """
-    # Validate product belongs to the selected supplier
-    if data.supplier_id and data.product_id:
-        product = db.query(Product).filter(
-            Product.product_id == data.product_id,
-            Product.deleted_at.is_(None),
-        ).first()
-        if not product or product.supplier_id != data.supplier_id:
-            raise HTTPException(
-                status_code=400,
-                detail="The selected product is not assigned to the selected supplier. "
-                       "Edit the product in Products → [Product] and set the correct Supplier.",
-            )
+    product = db.query(Product).filter(
+        Product.product_id == data.product_id,
+        Product.deleted_at.is_(None),
+    ).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
 
-    receiving = Receiving(**data.dict(), created_by=current_user.username)
+    # Validate product belongs to the selected supplier
+    if data.supplier_id and product.supplier_id != data.supplier_id:
+        raise HTTPException(
+            status_code=400,
+            detail="The selected product is not assigned to the selected supplier. "
+                   "Edit the product in Products → [Product] and set the correct Supplier.",
+        )
+
+    payload = data.dict()
+    payload["unit"] = product.unit or "PCS"  # unit always mirrors the product master, never user-entered
+    receiving = Receiving(**payload, created_by=current_user.username)
     db.add(receiving)
     db.flush()  # get receiving_id
 
@@ -274,6 +313,17 @@ def update_receiving(
     # accepted-quantity change.
     if "quantity_received" in update_data or "quantity_rejected" in update_data:
         update_data["quantity_accepted"] = data.quantity_accepted
+
+    # unit always mirrors the product master, never user-entered — re-derive it
+    # whenever the product (or a stray unit override) is part of this update.
+    if "product_id" in update_data or "unit" in update_data:
+        effective_product_id = update_data.get("product_id", receiving.product_id)
+        product = db.query(Product).filter(
+            Product.product_id == effective_product_id,
+            Product.deleted_at.is_(None),
+        ).first()
+        if product:
+            update_data["unit"] = product.unit or "PCS"
 
     needs_reapply = any(
         field in update_data and update_data[field] != getattr(receiving, field)

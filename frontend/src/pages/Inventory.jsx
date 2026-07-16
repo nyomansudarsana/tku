@@ -3,7 +3,7 @@ import { inventoriesAPI } from '../api'
 import AsyncDropdown from '../components/AsyncDropdown'
 import Pagination from '../components/Pagination'
 import { formatNumber, formatCurrency, stockBadge } from '../utils/format'
-import { exportCsv } from '../utils/exportCsv'
+import { downloadBlob } from '../utils/downloadFile'
 
 const INV_TYPES = ['TKU Product', 'Consignment', 'Titip Jual']
 
@@ -13,16 +13,21 @@ export default function Inventory() {
   const [page, setPage] = useState(1)
   const [warehouseFilter, setWarehouseFilter] = useState('')
   const [typeFilter, setTypeFilter] = useState('')
-  const limit = 20
+  const [exporting, setExporting] = useState(false)
+  const [limit, setLimit] = useState(20)
 
-  const load = useCallback(async () => {
-    const params = { page, limit }
+  const buildFilterParams = useCallback(() => {
+    const params = {}
     if (warehouseFilter) params.warehouse_id = warehouseFilter
     if (typeFilter) params.inventory_type = typeFilter
-    const res = await inventoriesAPI.list(params)
+    return params
+  }, [warehouseFilter, typeFilter])
+
+  const load = useCallback(async () => {
+    const res = await inventoriesAPI.list({ page, limit, ...buildFilterParams() })
     setItems(res.data.items)
     setTotal(res.data.total)
-  }, [page, warehouseFilter, typeFilter])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
@@ -36,10 +41,17 @@ export default function Inventory() {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn btn-secondary" onClick={() => {
-            const rows = items.map(inv => ({ product: inv.product?.product_name || '', warehouse: inv.warehouse?.warehouse_name || '', type: inv.inventory_type, qty: inv.quantity, avg_cost: inv.avg_cost, unit: inv.unit, remark: inv.remark || '' }))
-            exportCsv(rows, ['product','warehouse','type','qty','avg_cost','unit','remark'], { product:'Product', warehouse:'Warehouse', type:'Type', qty:'Quantity', avg_cost:'Avg Cost', unit:'Unit', remark:'Remark' }, 'inventory-export')
-          }}>Export CSV</button>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await inventoriesAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'inventory-export.xlsx')
+            } catch {
+              alert('Failed to export inventory.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
         </div>
       </div>
 
@@ -95,7 +107,8 @@ export default function Inventory() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
     </div>
   )

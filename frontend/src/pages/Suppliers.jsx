@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
-import { suppliersAPI, productsAPI } from '../api'
+import { suppliersAPI } from '../api'
 import AsyncDropdown from '../components/AsyncDropdown'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import SearchBar from '../components/SearchBar'
 import Pagination from '../components/Pagination'
 import { formatDate } from '../utils/format'
-import { exportCsv } from '../utils/exportCsv'
+import { downloadBlob } from '../utils/downloadFile'
 
 const empty = { supplier_name: '', supplier_contact: '', supplier_email: '', supplier_address: '' }
 
@@ -28,14 +28,21 @@ export default function Suppliers() {
   const [linkProductId, setLinkProductId] = useState('')
   const [linkLoading, setLinkLoading] = useState(false)
   const [linkError, setLinkError] = useState('')
+  const [exporting, setExporting] = useState(false)
 
-  const limit = 15
+  const [limit, setLimit] = useState(15)
+
+  const buildFilterParams = useCallback(() => {
+    const params = {}
+    if (search) params.search = search
+    return params
+  }, [search])
 
   const load = useCallback(async () => {
-    const res = await suppliersAPI.list({ search, page, limit })
+    const res = await suppliersAPI.list({ page, limit, ...buildFilterParams() })
     setItems(res.data.items)
     setTotal(res.data.total)
-  }, [search, page])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
@@ -104,7 +111,17 @@ export default function Suppliers() {
           <p style={{ color: '#64748b', fontSize: '0.875rem' }}>Manage supplier master data and linked products</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn btn-secondary" onClick={() => exportCsv(items, ['supplier_name','supplier_contact','supplier_email','supplier_address'], { supplier_name:'Name', supplier_contact:'Contact', supplier_email:'Email', supplier_address:'Address' }, 'suppliers-export')}>Export CSV</button>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await suppliersAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'suppliers-export.xlsx')
+            } catch {
+              alert('Failed to export suppliers.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
           <button className="btn btn-primary" onClick={openCreate}>+ Add Supplier</button>
         </div>
       </div>
@@ -157,7 +174,8 @@ export default function Suppliers() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
 
       {/* Edit/Create Modal */}
@@ -244,7 +262,6 @@ export default function Suppliers() {
                   <div key={lp.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.625rem 0.875rem', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: '0.5rem' }}>
                     <div>
                       <span style={{ fontWeight: 500, fontSize: '0.875rem', color: '#166534' }}>{lp.product_name}</span>
-                      {lp.sku && <span style={{ fontSize: '0.72rem', color: '#94a3b8', marginLeft: '0.5rem' }}>SKU: {lp.sku}</span>}
                     </div>
                     <button
                       onClick={() => handleUnlink(lp.product_id)}

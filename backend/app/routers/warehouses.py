@@ -8,8 +8,16 @@ from ..models.user import User
 from ..schemas.warehouse import WarehouseCreate, WarehouseUpdate, WarehouseResponse
 from ..services.auth import get_current_user
 from ..services.permissions import require_permission
+from ..utils.xlsx import xlsx_response
 
 router = APIRouter(prefix="/warehouses", tags=["Warehouses"])
+
+
+def _filtered_warehouses_query(db: Session, search: Optional[str] = None):
+    q = db.query(Warehouse).filter(Warehouse.deleted_at.is_(None))
+    if search:
+        q = q.filter(Warehouse.warehouse_name.ilike(f"%{search}%"))
+    return q
 
 
 @router.get("", response_model=dict)
@@ -20,12 +28,27 @@ def list_warehouses(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    q = db.query(Warehouse).filter(Warehouse.deleted_at.is_(None))
-    if search:
-        q = q.filter(Warehouse.warehouse_name.ilike(f"%{search}%"))
+    q = _filtered_warehouses_query(db, search)
     total = q.count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     return {"total": total, "page": page, "limit": limit, "items": [WarehouseResponse.from_orm(w) for w in items]}
+
+
+@router.get("/export")
+def export_warehouses(
+    search: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Excel export honoring the same filters as list_warehouses() above —
+    covers every matching row, not just the current page."""
+    items = _filtered_warehouses_query(db, search).all()
+    headers = ["Warehouse Name", "Location", "Description", "Created"]
+    rows = [
+        [w.warehouse_name, w.location or "", w.description or "", str(w.created_at) if w.created_at else ""]
+        for w in items
+    ]
+    return xlsx_response(headers, rows, "warehouses-export.xlsx")
 
 
 @router.post("", response_model=WarehouseResponse)

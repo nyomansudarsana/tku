@@ -19,6 +19,7 @@ import api from '../api/client'
  *   allowClear   bool     — shows ✕ button when value selected (default true)
  *   className    string
  *   style        object
+ *   formatLabel  fn(opt) => string — optional: overrides labelField for display + search
  */
 export default function SearchableSelect({
   endpoint,
@@ -34,6 +35,7 @@ export default function SearchableSelect({
   allowClear = true,
   className = '',
   style = {},
+  formatLabel = null,
 }) {
   const [isOpen,      setIsOpen]      = useState(false)
   const [search,      setSearch]      = useState('')
@@ -47,6 +49,7 @@ export default function SearchableSelect({
   const listRef      = useRef(null)
 
   const paramsKey = JSON.stringify(params ?? {})
+  const getLabel = (opt) => formatLabel ? formatLabel(opt) : opt[labelField]
 
   // ── Load options ────────────────────────────────────────────────────────────
   const loadOptions = useCallback(async () => {
@@ -76,8 +79,9 @@ export default function SearchableSelect({
   useEffect(() => {
     if (!value) { setLabel(''); return }
     const found = options.find(o => String(o[valueField]) === String(value))
-    if (found) setLabel(found[labelField])
-  }, [value, options, valueField, labelField])
+    if (found) setLabel(getLabel(found))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, options, valueField, labelField, formatLabel])
 
   // Close on outside click
   useEffect(() => {
@@ -100,7 +104,7 @@ export default function SearchableSelect({
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
   const filtered = options.filter(o =>
-    String(o[labelField] ?? '').toLowerCase().includes(search.toLowerCase())
+    String(getLabel(o) ?? '').toLowerCase().includes(search.toLowerCase())
   )
 
   const open = () => {
@@ -119,7 +123,7 @@ export default function SearchableSelect({
 
   const selectOption = (opt) => {
     onChange(String(opt[valueField]), opt)
-    setLabel(opt[labelField])
+    setLabel(getLabel(opt))
     close()
   }
 
@@ -270,7 +274,7 @@ export default function SearchableSelect({
                     transition: 'background 0.08s',
                   }}
                 >
-                  {opt[labelField]}
+                  {getLabel(opt)}
                 </div>
               )
             })}

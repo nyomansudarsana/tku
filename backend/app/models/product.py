@@ -13,7 +13,6 @@ class Product(Base, AuditMixin):
     category_id = Column(Integer, ForeignKey("categories.category_id"), nullable=True, index=True)
     sale_price = Column(Float, default=0.0, nullable=False)
     product_description = Column(Text, nullable=True)
-    sku = Column(String(50), unique=True, nullable=True, index=True)
     barcode = Column(String(100), nullable=True)
     unit = Column(String(20), default="PCS", nullable=False)
     status = Column(String(20), default="Active", nullable=False)

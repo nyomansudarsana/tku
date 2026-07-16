@@ -13,6 +13,7 @@ from ..services.auth import get_current_user
 from ..services.permissions import require_permission
 from ..services.inventory_service import update_inventory_balance
 from ..constants import DEFAULT_INVENTORY_TYPE
+from ..utils.xlsx import xlsx_response
 
 logger = logging.getLogger(__name__)
 
@@ -125,17 +126,13 @@ def _apply_damaged_stock_effect(db: Session, record: DamagedStock, created_by: s
         logger.warning("Inventory deduction failed for damaged_stock: %s", exc)
 
 
-@router.get("", response_model=dict)
-def list_damaged_stocks(
+def _filtered_damaged_stock_query(
+    db: Session,
     product_id:   Optional[int]  = None,
     warehouse_id: Optional[int]  = None,
     source:       Optional[str]  = None,
     date_from:    Optional[date] = None,
     date_to:      Optional[date] = None,
-    page:         int = Query(1, ge=1),
-    limit:        int = Query(20, ge=1, le=500),
-    current_user: User    = Depends(require_permission("damaged_stock.view")),
-    db:           Session = Depends(get_db),
 ):
     q = db.query(DamagedStock).options(
         joinedload(DamagedStock.product),
@@ -153,13 +150,51 @@ def list_damaged_stocks(
     if date_to:
         q = q.filter(DamagedStock.damage_date <= date_to)
 
-    q = q.order_by(DamagedStock.damage_date.desc(), DamagedStock.damaged_stock_id.desc())
+    return q.order_by(DamagedStock.damage_date.desc(), DamagedStock.damaged_stock_id.desc())
+
+
+@router.get("", response_model=dict)
+def list_damaged_stocks(
+    product_id:   Optional[int]  = None,
+    warehouse_id: Optional[int]  = None,
+    source:       Optional[str]  = None,
+    date_from:    Optional[date] = None,
+    date_to:      Optional[date] = None,
+    page:         int = Query(1, ge=1),
+    limit:        int = Query(20, ge=1, le=500),
+    current_user: User    = Depends(require_permission("damaged_stock.view")),
+    db:           Session = Depends(get_db),
+):
+    q = _filtered_damaged_stock_query(db, product_id, warehouse_id, source, date_from, date_to)
     total = q.count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     return {
         "total": total, "page": page, "limit": limit,
         "items": [DamagedStockResponse.from_orm(r) for r in items],
     }
+
+
+@router.get("/export")
+def export_damaged_stocks(
+    product_id:   Optional[int]  = None,
+    warehouse_id: Optional[int]  = None,
+    source:       Optional[str]  = None,
+    date_from:    Optional[date] = None,
+    date_to:      Optional[date] = None,
+    current_user: User    = Depends(require_permission("damaged_stock.view")),
+    db:           Session = Depends(get_db),
+):
+    """Excel export honoring the same filters as list_damaged_stocks() above."""
+    items = _filtered_damaged_stock_query(db, product_id, warehouse_id, source, date_from, date_to).all()
+    headers = ["Damage Date", "Product", "Warehouse", "Quantity", "Loss Amount", "Reason", "Source", "Reference", "Remarks"]
+    rows = [
+        [str(r.damage_date), r.product.product_name if r.product else "",
+         r.warehouse.warehouse_name if r.warehouse else "", r.quantity,
+         r.loss_amount if r.loss_amount is not None else "N/A",
+         r.damage_reason, r.source or "Manual", r.source_reference or "", r.remarks or ""]
+        for r in items
+    ]
+    return xlsx_response(headers, rows, "damaged-stock-export.xlsx")
 
 
 @router.post("", response_model=DamagedStockResponse)

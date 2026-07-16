@@ -13,6 +13,7 @@ export const usersAPI = {
   update:        (id, data)   => api.put(`/users/${id}`, data),
   delete:        (id)         => api.delete(`/users/${id}`),
   resetPassword: (id, data)   => api.post(`/users/${id}/reset-password`, data),
+  exportXlsx:    (params = {}) => api.get('/users/export', { params, responseType: 'blob' }),
 }
 
 export const suppliersAPI = {
@@ -24,6 +25,7 @@ export const suppliersAPI = {
   listProducts: (supplierId)         => api.get(`/suppliers/${supplierId}/products`),
   linkProduct:  (supplierId, data)   => api.post(`/suppliers/${supplierId}/products`, data),
   unlinkProduct:(supplierId, prodId) => api.delete(`/suppliers/${supplierId}/products/${prodId}`),
+  exportXlsx:   (params = {})        => api.get('/suppliers/export', { params, responseType: 'blob' }),
 }
 
 export const categoriesAPI = {
@@ -32,6 +34,7 @@ export const categoriesAPI = {
   get:    (id)       => api.get(`/categories/${id}`),
   update: (id, data) => api.put(`/categories/${id}`, data),
   delete: (id)       => api.delete(`/categories/${id}`),
+  exportXlsx: (params = {}) => api.get('/categories/export', { params, responseType: 'blob' }),
 }
 
 export const productsAPI = {
@@ -41,6 +44,7 @@ export const productsAPI = {
   update:            (id, data)        => api.put(`/products/${id}`, data),
   delete:            (id)              => api.delete(`/products/${id}`),
   getAvailableStock: (id, params = {}) => api.get(`/products/${id}/available-stock`, { params }),
+  exportXlsx:        (params = {})     => api.get('/products/export', { params, responseType: 'blob' }),
 }
 
 export const warehousesAPI = {
@@ -49,6 +53,7 @@ export const warehousesAPI = {
   get:    (id)       => api.get(`/warehouses/${id}`),
   update: (id, data) => api.put(`/warehouses/${id}`, data),
   delete: (id)       => api.delete(`/warehouses/${id}`),
+  exportXlsx: (params = {}) => api.get('/warehouses/export', { params, responseType: 'blob' }),
 }
 
 export const storesAPI = {
@@ -57,6 +62,7 @@ export const storesAPI = {
   get:    (id)       => api.get(`/stores/${id}`),
   update: (id, data) => api.put(`/stores/${id}`, data),
   delete: (id)       => api.delete(`/stores/${id}`),
+  exportXlsx: (params = {}) => api.get('/stores/export', { params, responseType: 'blob' }),
 }
 
 export const receivingsAPI = {
@@ -65,6 +71,7 @@ export const receivingsAPI = {
   get:    (id)       => api.get(`/receivings/${id}`),
   update: (id, data) => api.put(`/receivings/${id}`, data),
   delete: (id)       => api.delete(`/receivings/${id}`),
+  exportXlsx: (params = {}) => api.get('/receivings/export', { params, responseType: 'blob' }),
 }
 
 // Inventory is read-only in the UI — quantity/avg_cost only change through
@@ -73,6 +80,7 @@ export const receivingsAPI = {
 export const inventoriesAPI = {
   list: (params) => api.get('/inventories', { params }),
   get:  (id)     => api.get(`/inventories/${id}`),
+  exportXlsx: (params = {}) => api.get('/inventories/export', { params, responseType: 'blob' }),
 }
 
 export const stockMovementsAPI = {
@@ -81,6 +89,7 @@ export const stockMovementsAPI = {
   get:    (id)       => api.get(`/stock-movements/${id}`),
   update: (id, data) => api.put(`/stock-movements/${id}`, data),
   delete: (id)       => api.delete(`/stock-movements/${id}`),
+  exportXlsx: (params = {}) => api.get('/stock-movements/export', { params, responseType: 'blob' }),
 }
 
 export const salesAPI = {
@@ -90,6 +99,7 @@ export const salesAPI = {
   update:             (id, data) => api.put(`/sales/${id}`, data),
   delete:             (id)     => api.delete(`/sales/${id}`),
   togglePaymentStatus:(id)     => api.patch(`/sales/${id}/payment-status`),
+  exportXlsx:         (params = {}) => api.get('/sales/export', { params, responseType: 'blob' }),
 }
 
 export const salesReturnsAPI = {
@@ -98,6 +108,7 @@ export const salesReturnsAPI = {
   get:    (id)       => api.get(`/sales-returns/${id}`),
   update: (id, data) => api.put(`/sales-returns/${id}`, data),
   delete: (id)       => api.delete(`/sales-returns/${id}`),
+  exportXlsx: (params = {}) => api.get('/sales-returns/export', { params, responseType: 'blob' }),
 }
 
 export const supplierReturnsAPI = {
@@ -106,6 +117,7 @@ export const supplierReturnsAPI = {
   get:    (id)       => api.get(`/supplier-returns/${id}`),
   update: (id, data) => api.put(`/supplier-returns/${id}`, data),
   delete: (id)       => api.delete(`/supplier-returns/${id}`),
+  exportXlsx: (params = {}) => api.get('/supplier-returns/export', { params, responseType: 'blob' }),
 }
 
 export const damagedStocksAPI = {
@@ -114,6 +126,7 @@ export const damagedStocksAPI = {
   get:    (id)       => api.get(`/damaged-stocks/${id}`),
   update: (id, data) => api.put(`/damaged-stocks/${id}`, data),
   delete: (id)       => api.delete(`/damaged-stocks/${id}`),
+  exportXlsx: (params = {}) => api.get('/damaged-stocks/export', { params, responseType: 'blob' }),
 }
 
 export const stockOpnamesAPI = {
@@ -128,6 +141,7 @@ export const stockOpnamesAPI = {
   addDetail:             (id, data)       => api.post(`/stock-opnames/${id}/details`, data),
   updateDetail:          (id, detId, data)=> api.put(`/stock-opnames/${id}/details/${detId}`, data),
   deleteDetail:          (id, detId)      => api.delete(`/stock-opnames/${id}/details/${detId}`),
+  exportXlsx:            (params = {})    => api.get('/stock-opnames/export', { params, responseType: 'blob' }),
 }
 
 export const bankAccountsAPI = {
@@ -136,6 +150,7 @@ export const bankAccountsAPI = {
   get:    (id)       => api.get(`/bank-accounts/${id}`),
   update: (id, data) => api.put(`/bank-accounts/${id}`, data),
   delete: (id)       => api.delete(`/bank-accounts/${id}`),
+  exportXlsx: (params = {}) => api.get('/bank-accounts/export', { params, responseType: 'blob' }),
 }
 
 export const bulkUploadAPI = {

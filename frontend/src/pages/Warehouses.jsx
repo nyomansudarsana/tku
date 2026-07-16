@@ -5,7 +5,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import SearchBar from '../components/SearchBar'
 import Pagination from '../components/Pagination'
 import { formatDate } from '../utils/format'
-import { exportCsv } from '../utils/exportCsv'
+import { downloadBlob } from '../utils/downloadFile'
 
 const empty = { warehouse_name: '', location: '', description: '' }
 
@@ -20,13 +20,20 @@ export default function Warehouses() {
   const [deleteId, setDeleteId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const limit = 15
+  const [exporting, setExporting] = useState(false)
+  const [limit, setLimit] = useState(15)
+
+  const buildFilterParams = useCallback(() => {
+    const params = {}
+    if (search) params.search = search
+    return params
+  }, [search])
 
   const load = useCallback(async () => {
-    const res = await warehousesAPI.list({ search, page, limit })
+    const res = await warehousesAPI.list({ page, limit, ...buildFilterParams() })
     setItems(res.data.items)
     setTotal(res.data.total)
-  }, [search, page])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
@@ -52,7 +59,17 @@ export default function Warehouses() {
           <p style={{ color: '#64748b', fontSize: '0.875rem' }}>Manage warehouse locations</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn btn-secondary" onClick={() => exportCsv(items, ['warehouse_name','location','description'], { warehouse_name:'Name', location:'Location', description:'Description' }, 'warehouses-export')}>Export CSV</button>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await warehousesAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'warehouses-export.xlsx')
+            } catch {
+              alert('Failed to export warehouses.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
           <button className="btn btn-primary" onClick={openCreate}>+ Add Warehouse</button>
         </div>
       </div>
@@ -79,7 +96,8 @@ export default function Warehouses() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
       <Modal open={modal} onClose={() => setModal(false)} title={editing ? 'Edit Warehouse' : 'Add Warehouse'} size="sm">
         <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>

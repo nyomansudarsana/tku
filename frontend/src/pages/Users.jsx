@@ -5,7 +5,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import SearchBar from '../components/SearchBar'
 import Pagination from '../components/Pagination'
 import { formatDate } from '../utils/format'
-import { exportCsv } from '../utils/exportCsv'
+import { downloadBlob } from '../utils/downloadFile'
 
 const ROLES = ['Admin', 'Manager', 'Staff']
 const empty = { username: '', full_name: '', email: '', password: '', role: 'Staff', status: 'Active' }
@@ -24,13 +24,20 @@ export default function Users() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [resetError, setResetError] = useState('')
-  const limit = 15
+  const [exporting, setExporting] = useState(false)
+  const [limit, setLimit] = useState(15)
+
+  const buildFilterParams = useCallback(() => {
+    const params = {}
+    if (search) params.search = search
+    return params
+  }, [search])
 
   const load = useCallback(async () => {
-    const res = await usersAPI.list({ search, page, limit })
+    const res = await usersAPI.list({ page, limit, ...buildFilterParams() })
     setItems(res.data.items)
     setTotal(res.data.total)
-  }, [search, page])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
@@ -75,7 +82,17 @@ export default function Users() {
           <p style={{ color: '#64748b', fontSize: '0.875rem' }}>Manage system users and roles</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn btn-secondary" onClick={() => exportCsv(items, ['username','full_name','email','role','status'], { username:'Username', full_name:'Full Name', email:'Email', role:'Role', status:'Status' }, 'users-export')}>Export CSV</button>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await usersAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'users-export.xlsx')
+            } catch {
+              alert('Failed to export users.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
           <button className="btn btn-primary" onClick={openCreate}>+ Add User</button>
         </div>
       </div>
@@ -105,7 +122,8 @@ export default function Users() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
 
       <Modal open={modal} onClose={() => setModal(false)} title={editing ? 'Edit User' : 'Add User'} size="md">

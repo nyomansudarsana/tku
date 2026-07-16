@@ -5,7 +5,7 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import SearchBar from '../components/SearchBar'
 import Pagination from '../components/Pagination'
 import { formatDate } from '../utils/format'
-import { exportCsv } from '../utils/exportCsv'
+import { downloadBlob } from '../utils/downloadFile'
 
 const empty = { category_name: '', description: '' }
 
@@ -20,13 +20,20 @@ export default function Categories() {
   const [deleteId, setDeleteId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const limit = 15
+  const [exporting, setExporting] = useState(false)
+  const [limit, setLimit] = useState(15)
+
+  const buildFilterParams = useCallback(() => {
+    const params = {}
+    if (search) params.search = search
+    return params
+  }, [search])
 
   const load = useCallback(async () => {
-    const res = await categoriesAPI.list({ search, page, limit })
+    const res = await categoriesAPI.list({ page, limit, ...buildFilterParams() })
     setItems(res.data.items)
     setTotal(res.data.total)
-  }, [search, page])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
@@ -60,7 +67,17 @@ export default function Categories() {
           <p style={{ color: '#64748b', fontSize: '0.875rem' }}>Manage product categories</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn btn-secondary" onClick={() => exportCsv(items, ['category_name','description'], { category_name:'Category Name', description:'Description' }, 'categories-export')}>Export CSV</button>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await categoriesAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'categories-export.xlsx')
+            } catch {
+              alert('Failed to export categories.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
           <button className="btn btn-primary" onClick={openCreate}>+ Add Category</button>
         </div>
       </div>
@@ -100,7 +117,8 @@ export default function Categories() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
 
       <Modal open={modal} onClose={() => setModal(false)} title={editing ? 'Edit Category' : 'Add Category'} size="sm">

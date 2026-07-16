@@ -167,11 +167,14 @@ def inventory_report(
     category_id: Optional[int] = None,
     inventory_type: Optional[str] = None,
     format: str = Query("json", pattern="^(json|xlsx)$"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(15, ge=1, le=2000),
     current_user: User = Depends(require_permission("inventory.view")),
     db: Session = Depends(get_db),
 ):
     rows = _compute_inventory_report(db, warehouse_id, category_id, inventory_type)
     if format == "xlsx":
+        # Exports always cover every filtered row, never just the current page.
         headers = [
             "Product", "Category", "Warehouse", "Available Stock", "Damaged Stock",
             "Inventory Type", "Purchase Price", "Inventory Value",
@@ -183,7 +186,17 @@ def inventory_report(
             for r in rows
         ]
         return _xlsx_response(headers, xlsx_rows, "inventory-report.xlsx")
-    return {"items": rows, "total": len(rows)}
+    total = len(rows)
+    start = (page - 1) * limit
+    # Computed over the FULL filtered set (before slicing to the current
+    # page) so the on-screen summary cards always reflect every matching
+    # row, not just whatever's currently visible.
+    totals = {
+        "total_products": len({r["product_id"] for r in rows}),
+        "total_quantity": sum(r["available_stock"] or 0 for r in rows),
+        "total_value": round(sum(r["inventory_value"] or 0 for r in rows if r["inventory_value"] is not None), 2),
+    }
+    return {"items": rows[start:start + limit], "total": total, "page": page, "limit": limit, "totals": totals}
 
 
 # ── Sales Report ─────────────────────────────────────────────────────────────
@@ -286,11 +299,14 @@ def sales_report(
     date_to: Optional[date] = None,
     store_id: Optional[int] = None,
     format: str = Query("json", pattern="^(json|xlsx)$"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(15, ge=1, le=2000),
     current_user: User = Depends(require_permission("sales.view")),
     db: Session = Depends(get_db),
 ):
     rows = _compute_sales_report(db, date_from, date_to, store_id)
     if format == "xlsx":
+        # Exports always cover every filtered row, never just the current page.
         headers = [
             "Sales Date", "Sales Number", "Store", "Customer", "Product", "Qty Sold",
             "Purchase Price", "Discount (%)", "Discount Amount",
@@ -309,4 +325,16 @@ def sales_report(
             for r in rows
         ]
         return _xlsx_response(headers, xlsx_rows, "sales-report.xlsx")
-    return {"items": rows, "total": len(rows)}
+    total = len(rows)
+    start = (page - 1) * limit
+    # Computed over the FULL filtered set (before slicing to the current
+    # page) so the on-screen summary cards always reflect every matching
+    # row, not just whatever's currently visible.
+    totals = {
+        "discount_amount": round(sum(r["_line_discount_amount"] or 0 for r in rows), 2),
+        "sales_price_excl_vat": round(sum(r["_line_sales_price_excl_vat"] or 0 for r in rows), 2),
+        "vat_amount": round(sum(r["_line_vat_amount"] or 0 for r in rows), 2),
+        "sales_price_incl_vat": round(sum(r["_line_sales_price_incl_vat"] or 0 for r in rows), 2),
+        "margin": round(sum(r["_line_margin"] or 0 for r in rows), 2),
+    }
+    return {"items": rows[start:start + limit], "total": total, "page": page, "limit": limit, "totals": totals}

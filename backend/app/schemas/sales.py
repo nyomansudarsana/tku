@@ -1,6 +1,8 @@
 from pydantic import BaseModel, field_validator
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import date, datetime
+
+CustomerType = Literal["Walk-in Customer", "Online Customer"]
 
 
 # ── Nested info schemas ──────────────────────────────────────────────────────
@@ -101,6 +103,8 @@ class SalesCreate(BaseModel):
     store_id: Optional[int] = None
     warehouse_id: Optional[int] = None
     customer_name: Optional[str] = None
+    customer_type: CustomerType = "Walk-in Customer"
+    shipping_cost: float = 0    # NOT subject to VAT; only meaningful for Online Customer
     payment_method: str = "Cash"
     payment_status: str = "Paid"
     remarks: Optional[str] = None
@@ -109,6 +113,13 @@ class SalesCreate(BaseModel):
     edc_receipt_number: Optional[str] = None
     edc_special_code: Optional[str] = None
     details: List[SalesDetailCreate]
+
+    @field_validator("shipping_cost")
+    @classmethod
+    def validate_shipping_cost(cls, v):
+        if v < 0:
+            raise ValueError("shipping_cost cannot be negative")
+        return v
 
     @field_validator("details")
     @classmethod
@@ -132,6 +143,8 @@ class SalesUpdate(BaseModel):
     store_id: Optional[int] = None
     warehouse_id: Optional[int] = None
     customer_name: Optional[str] = None
+    customer_type: Optional[CustomerType] = None
+    shipping_cost: Optional[float] = None
     payment_method: Optional[str] = None
     payment_status: Optional[str] = None
     remarks: Optional[str] = None
@@ -140,6 +153,13 @@ class SalesUpdate(BaseModel):
     edc_receipt_number: Optional[str] = None
     edc_special_code: Optional[str] = None
     details: Optional[List[SalesDetailCreate]] = None
+
+    @field_validator("shipping_cost")
+    @classmethod
+    def validate_shipping_cost(cls, v):
+        if v is not None and v < 0:
+            raise ValueError("shipping_cost cannot be negative")
+        return v
 
     @field_validator("details")
     @classmethod
@@ -163,12 +183,16 @@ class SalesResponse(BaseModel):
     store_id: Optional[int] = None
     warehouse_id: Optional[int] = None
     customer_name: Optional[str] = None
+    customer_type: str = "Walk-in Customer"
+    shipping_cost: float = 0
     payment_method: str
     payment_status: str
     subtotal: float
+    basic_subtotal: float = 0
     discount_amount: float
     vat_amount: float
     grand_total: float
+    final_total: float = 0
     remarks: Optional[str] = None
     bank_account_id: Optional[int] = None
     transfer_reference: Optional[str] = None

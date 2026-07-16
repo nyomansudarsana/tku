@@ -3,6 +3,7 @@ import { dashboardAPI, storesAPI, categoriesAPI } from '../api'
 import { Link } from 'react-router-dom'
 import { formatCurrency, formatNumber, formatDate, paymentStatusBadge } from '../utils/format'
 import { useAuth } from '../context/AuthContext'
+import Pagination from '../components/Pagination'
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 
 const COLORS = ['#2563eb', '#16a34a', '#dc2626', '#d97706', '#7c3aed', '#0891b2']
@@ -43,6 +44,8 @@ export default function Dashboard() {
   const [opnameSummary, setOpnameSummary] = useState(null)
   const [damagedSummary, setDamagedSummary] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [lowStockPage, setLowStockPage] = useState(1)
+  const [lowStockLimit, setLowStockLimit] = useState(15)
 
   useEffect(() => {
     Promise.all([storesAPI.list({ limit: 100 }), categoriesAPI.list({ limit: 100 })]).then(([s, c]) => {
@@ -63,7 +66,7 @@ export default function Dashboard() {
       dashboardAPI.salesByStore(params),
       dashboardAPI.salesTrend({ ...params, days: 30 }),
       dashboardAPI.stockSummary({}),
-      dashboardAPI.lowStock({ limit: 50 }),
+      dashboardAPI.lowStock({ limit: 200 }),
       dashboardAPI.salesByPaymentMethod(params),
       dashboardAPI.outstandingSales(),
       dashboardAPI.stockByLocation(),
@@ -384,7 +387,7 @@ export default function Dashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {lowStockItems.map((item, i) => {
+                  {lowStockItems.slice((lowStockPage - 1) * lowStockLimit, lowStockPage * lowStockLimit).map((item, i) => {
                     const isOut = item.current_stock <= 0
                     return (
                       <tr key={i} style={{ borderTop: '1px solid #f1f5f9', background: isOut ? '#fff5f5' : 'white' }}>
@@ -415,6 +418,10 @@ export default function Dashboard() {
                   })}
                 </tbody>
               </table>
+            </div>
+            <div style={{ padding: '0 1.25rem 0.75rem' }}>
+              <Pagination page={lowStockPage} total={lowStockItems.length} limit={lowStockLimit} onChange={setLowStockPage}
+                pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLowStockLimit(v); setLowStockPage(1) }} />
             </div>
           </div>
 

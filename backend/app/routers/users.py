@@ -7,8 +7,16 @@ from ..models.user import User
 from ..schemas.user import UserCreate, UserUpdate, UserResponse, ResetPasswordRequest
 from ..services.permissions import require_permission
 from ..utils.security import get_password_hash
+from ..utils.xlsx import xlsx_response
 
 router = APIRouter(prefix="/users", tags=["Users"])
+
+
+def _filtered_users_query(db: Session, search: Optional[str] = None):
+    q = db.query(User).filter(User.deleted_at.is_(None))
+    if search:
+        q = q.filter(User.username.ilike(f"%{search}%") | User.full_name.ilike(f"%{search}%"))
+    return q
 
 
 @router.get("", response_model=dict)
@@ -19,12 +27,28 @@ def list_users(
     current_user: User = Depends(require_permission("users.manage")),
     db: Session = Depends(get_db)
 ):
-    q = db.query(User).filter(User.deleted_at.is_(None))
-    if search:
-        q = q.filter(User.username.ilike(f"%{search}%") | User.full_name.ilike(f"%{search}%"))
+    q = _filtered_users_query(db, search)
     total = q.count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     return {"total": total, "page": page, "limit": limit, "items": [UserResponse.from_orm(u) for u in items]}
+
+
+@router.get("/export")
+def export_users(
+    search: Optional[str] = None,
+    current_user: User = Depends(require_permission("users.manage")),
+    db: Session = Depends(get_db)
+):
+    """Excel export honoring the same filters as list_users() above — covers
+    every matching row, not just the current page. Only display-safe columns
+    are included; password_hash is never exported."""
+    items = _filtered_users_query(db, search).all()
+    headers = ["Username", "Full Name", "Email", "Role", "Status", "Created"]
+    rows = [
+        [u.username, u.full_name, u.email or "", u.role, u.status, str(u.created_at) if u.created_at else ""]
+        for u in items
+    ]
+    return xlsx_response(headers, rows, "users-export.xlsx")
 
 
 @router.post("", response_model=UserResponse)

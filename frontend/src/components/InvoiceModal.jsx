@@ -89,6 +89,10 @@ function InvoiceContent({ sale }) {
   const totalDiscount = sale.discount_amount ?? lines.reduce((s, l) => s + (l.discount_amount || 0), 0)
   const totalVat      = sale.vat_amount      ?? lines.reduce((s, l) => s + (l.vat_amount || 0), 0)
   const grandTotal    = sale.grand_total     ?? lines.reduce((s, l) => s + (l.line_total || 0), 0)
+  const basicSubtotal = sale.basic_subtotal  ?? (grandTotal - totalVat)
+  const isOnline      = sale.customer_type === 'Online Customer'
+  const shippingCost  = sale.shipping_cost || 0
+  const amountDue     = isOnline ? (sale.final_total ?? (grandTotal + shippingCost)) : grandTotal
 
   return (
     <div style={S.page} id="tku-invoice-printable">
@@ -182,8 +186,8 @@ function InvoiceContent({ sale }) {
       <div style={S.section}>
         <div style={S.calcBox}>
           <div style={S.calcRow}>
-            <span style={{ color: '#64748b' }}>Subtotal (Incl. VAT)</span>
-            <span style={{ fontWeight: 500 }}>{formatCurrency(sale.subtotal || lines.reduce((s, l) => s + (l.unit_price * l.quantity), 0))}</span>
+            <span style={{ color: '#64748b' }}>Subtotal (Basic Price)</span>
+            <span style={{ fontWeight: 500 }}>{formatCurrency(basicSubtotal)}</span>
           </div>
           {totalDiscount > 0 && (
             <div style={{ ...S.calcRow, color: '#dc2626' }}>
@@ -195,10 +199,22 @@ function InvoiceContent({ sale }) {
             <span style={{ color: '#64748b' }}>VAT 11% (PPN)</span>
             <span style={{ fontWeight: 500 }}>{formatCurrency(totalVat)}</span>
           </div>
+          {isOnline && (
+            <>
+              <div style={S.calcRow}>
+                <span style={{ color: '#64748b' }}>Total</span>
+                <span style={{ fontWeight: 500 }}>{formatCurrency(grandTotal)}</span>
+              </div>
+              <div style={S.calcRow}>
+                <span style={{ color: '#64748b' }}>Shipping Cost</span>
+                <span style={{ fontWeight: 500 }}>{formatCurrency(shippingCost)}</span>
+              </div>
+            </>
+          )}
           <div style={S.calcDivider} />
           <div style={S.grandRow}>
             <span style={S.grandLabel}>Grand Total</span>
-            <span style={S.grandValue}>{formatCurrency(grandTotal)}</span>
+            <span style={S.grandValue}>{formatCurrency(amountDue)}</span>
           </div>
         </div>
       </div>

@@ -2,9 +2,9 @@ import { useState, useEffect, useCallback } from 'react'
 import { damagedStocksAPI } from '../api'
 import SearchableSelect from '../components/SearchableSelect'
 import Modal from '../components/Modal'
-import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
 import { formatDate, formatNumber, formatCurrency } from '../utils/format'
+import { downloadBlob } from '../utils/downloadFile'
 
 const DAMAGE_REASONS = [
   'Broken',
@@ -36,28 +36,32 @@ export default function DamagedStock() {
   const [total,    setTotal]    = useState(0)
   const [page,     setPage]     = useState(1)
   const [modal,    setModal]    = useState(false)
-  const [editing,  setEditing]  = useState(null)
+  const [viewing,  setViewing]  = useState(null)
   const [form,     setForm]     = useState(emptyForm)
-  const [deleteId, setDeleteId] = useState(null)
   const [loading,  setLoading]  = useState(false)
   const [error,    setError]    = useState('')
   const [filters,  setFilters]  = useState({ source: '' })
-  const limit = 20
+  const [exporting, setExporting] = useState(false)
+  const [limit, setLimit] = useState(20)
+
+  const buildFilterParams = useCallback(() => {
+    const params = {}
+    if (filters.source) params.source = filters.source
+    return params
+  }, [filters])
 
   const load = useCallback(async () => {
-    const params = { page, limit }
-    if (filters.source) params.source = filters.source
-    const res = await damagedStocksAPI.list(params)
+    const res = await damagedStocksAPI.list({ page, limit, ...buildFilterParams() })
     setItems(res.data.items || [])
     setTotal(res.data.total || 0)
-  }, [page, filters])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
-  const openCreate = () => { setEditing(null); setForm(emptyForm); setError(''); setModal(true) }
+  const openCreate = () => { setViewing(null); setForm(emptyForm); setError(''); setModal(true) }
 
-  const openEdit = (item) => {
-    setEditing(item)
+  const openView = (item) => {
+    setViewing(item)
     setForm({
       product_id:       String(item.product_id),
       warehouse_id:     item.warehouse_id ? String(item.warehouse_id) : '',
@@ -74,6 +78,7 @@ export default function DamagedStock() {
 
   const handleSave = async (e) => {
     e.preventDefault()
+    if (viewing) return
     setError('')
     const qty = parseInt(form.quantity)
     if (!qty || qty <= 0) { setError('Quantity must be greater than 0'); return }
@@ -90,8 +95,7 @@ export default function DamagedStock() {
         source_reference: form.source_reference || null,
         remarks:          form.remarks || null,
       }
-      if (editing) await damagedStocksAPI.update(editing.damaged_stock_id, data)
-      else         await damagedStocksAPI.create(data)
+      await damagedStocksAPI.create(data)
       setModal(false)
       load()
     } catch (err) {
@@ -117,7 +121,20 @@ export default function DamagedStock() {
             Track defective, broken, expired, and non-sellable items — excluded from available inventory
           </p>
         </div>
-        <button className="btn btn-primary" onClick={openCreate}>+ Record Damaged Stock</button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await damagedStocksAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'damaged-stock-export.xlsx')
+            } catch {
+              alert('Failed to export damaged stock.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
+          <button className="btn btn-primary" onClick={openCreate}>+ Record Damaged Stock</button>
+        </div>
       </div>
 
       {/* Summary banner */}
@@ -188,10 +205,7 @@ export default function DamagedStock() {
                     </td>
                     <td style={{ fontSize: '0.75rem', color: '#64748b' }}>{item.source_reference || '—'}</td>
                     <td>
-                      <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <button className="btn btn-secondary btn-sm" onClick={() => openEdit(item)}>Edit</button>
-                        <button className="btn btn-danger btn-sm" onClick={() => setDeleteId(item.damaged_stock_id)}>Del</button>
-                      </div>
+                      <button className="btn btn-secondary btn-sm" onClick={() => openView(item)}>View</button>
                     </td>
                   </tr>
                 )
@@ -199,11 +213,12 @@ export default function DamagedStock() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
 
       {/* Form Modal */}
-      <Modal open={modal} onClose={() => setModal(false)} title={editing ? 'Edit Damaged Stock Record' : 'Record Damaged Stock'} size="lg">
+      <Modal open={modal} onClose={() => setModal(false)} title={viewing ? 'View Damaged Stock Record' : 'Record Damaged Stock'} size="lg">
         <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           {error && (
             <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '0.5rem', padding: '0.75rem', color: '#dc2626', fontSize: '0.875rem' }}>
@@ -211,9 +226,11 @@ export default function DamagedStock() {
             </div>
           )}
 
-          <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: '0.5rem', padding: '0.75rem', fontSize: '0.8125rem', color: '#92400e' }}>
-            These items will be recorded as <strong>non-sellable</strong> and will <strong>not</strong> affect available inventory balance.
-          </div>
+          {!viewing && (
+            <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: '0.5rem', padding: '0.75rem', fontSize: '0.8125rem', color: '#92400e' }}>
+              These items will be recorded as <strong>non-sellable</strong> and will <strong>not</strong> affect available inventory balance.
+            </div>
+          )}
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
             <div style={{ gridColumn: '1 / -1' }}>
@@ -226,6 +243,7 @@ export default function DamagedStock() {
                 onChange={v => setForm(f => ({ ...f, product_id: v }))}
                 placeholder="Search product..."
                 required
+                disabled={!!viewing}
               />
             </div>
 
@@ -238,25 +256,26 @@ export default function DamagedStock() {
                 value={form.warehouse_id}
                 onChange={v => setForm(f => ({ ...f, warehouse_id: v }))}
                 placeholder="Select warehouse (optional)"
+                disabled={!!viewing}
               />
             </div>
 
             <div>
               <label className="label">Damage Date *</label>
-              <input className="input" type="date" required value={form.damage_date}
+              <input className="input" type="date" required disabled={!!viewing} value={form.damage_date}
                 onChange={e => setForm(f => ({ ...f, damage_date: e.target.value }))} />
             </div>
 
             <div>
               <label className="label">Quantity *</label>
-              <input className="input" type="number" required min="1" step="1"
+              <input className="input" type="number" required min="1" step="1" disabled={!!viewing}
                 value={form.quantity}
                 onChange={e => setForm(f => ({ ...f, quantity: e.target.value }))} />
             </div>
 
             <div>
               <label className="label">Damage Reason *</label>
-              <select className="input" value={form.damage_reason}
+              <select className="input" disabled={!!viewing} value={form.damage_reason}
                 onChange={e => setForm(f => ({ ...f, damage_reason: e.target.value }))}>
                 {DAMAGE_REASONS.map(r => <option key={r}>{r}</option>)}
               </select>
@@ -264,7 +283,7 @@ export default function DamagedStock() {
 
             <div>
               <label className="label">Source</label>
-              <select className="input" value={form.source}
+              <select className="input" disabled={!!viewing} value={form.source}
                 onChange={e => setForm(f => ({ ...f, source: e.target.value }))}>
                 {SOURCES.map(s => <option key={s}>{s}</option>)}
               </select>
@@ -272,27 +291,26 @@ export default function DamagedStock() {
 
             <div style={{ gridColumn: '1 / -1' }}>
               <label className="label">Source Reference</label>
-              <input className="input" placeholder="e.g. RTN-12, OPNAME-5, etc."
+              <input className="input" placeholder="e.g. RTN-12, OPNAME-5, etc." disabled={!!viewing}
                 value={form.source_reference}
                 onChange={e => setForm(f => ({ ...f, source_reference: e.target.value }))} />
             </div>
 
             <div style={{ gridColumn: '1 / -1' }}>
               <label className="label">Remarks</label>
-              <textarea className="input" rows={2} value={form.remarks}
+              <textarea className="input" rows={2} disabled={!!viewing} value={form.remarks}
                 onChange={e => setForm(f => ({ ...f, remarks: e.target.value }))} />
             </div>
           </div>
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
-            <button type="button" className="btn btn-secondary" onClick={() => setModal(false)}>Cancel</button>
-            <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Saving...' : 'Save Record'}</button>
+            <button type="button" className="btn btn-secondary" onClick={() => setModal(false)}>{viewing ? 'Close' : 'Cancel'}</button>
+            {!viewing && (
+              <button type="submit" className="btn btn-primary" disabled={loading}>{loading ? 'Saving...' : 'Save Record'}</button>
+            )}
           </div>
         </form>
       </Modal>
-
-      <ConfirmDialog open={!!deleteId} onClose={() => setDeleteId(null)}
-        onConfirm={async () => { await damagedStocksAPI.delete(deleteId); load() }} />
     </div>
   )
 }

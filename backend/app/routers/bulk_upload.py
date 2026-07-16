@@ -43,9 +43,9 @@ TEMPLATES = {
         "example": [{"category_name": "Water Filter", "description": "Water purification products"}],
     },
     "products": {
-        "columns": ["product_name", "category_name", "sale_price", "sku", "barcode", "unit", "status", "minimum_stock_level", "product_description"],
+        "columns": ["product_name", "category_name", "sale_price", "barcode", "unit", "status", "minimum_stock_level", "product_description"],
         "required": ["product_name", "sale_price"],
-        "example": [{"product_name": "Nazava Filter S", "category_name": "Water Filter", "sale_price": "500000", "sku": "NF-S001", "barcode": "", "unit": "PCS", "status": "Active", "minimum_stock_level": "10", "product_description": "Portable water filter"}],
+        "example": [{"product_name": "Nazava Filter S", "category_name": "Water Filter", "sale_price": "500000", "barcode": "", "unit": "PCS", "status": "Active", "minimum_stock_level": "10", "product_description": "Portable water filter"}],
     },
     "bank_accounts": {
         "columns": ["bank_name", "account_number", "beneficiary_name", "is_active"],
@@ -342,7 +342,6 @@ def _import_products(valid_rows: list[dict], db: Session, username: str) -> tupl
                 product_name=row["product_name"].strip(),
                 category_id=row.get("_category_id"),
                 sale_price=float(row["sale_price"]),
-                sku=row.get("sku", "").strip() or None,
                 barcode=row.get("barcode", "").strip() or None,
                 unit=row.get("unit", "PCS").strip() or "PCS",
                 status=row.get("status", "Active").strip() or "Active",

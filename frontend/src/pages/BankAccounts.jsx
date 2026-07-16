@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { bankAccountsAPI } from '../api'
-import { exportCsv } from '../utils/exportCsv'
+import { downloadBlob } from '../utils/downloadFile'
 import Modal from '../components/Modal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Pagination from '../components/Pagination'
@@ -17,18 +17,24 @@ export default function BankAccounts() {
   const [deleteId, setDeleteId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const limit = 20
+  const [exporting, setExporting] = useState(false)
+  const [limit, setLimit] = useState(20)
+
+  // No filter controls are exposed on this page's table yet — kept as a
+  // helper (mirroring the other list pages) so it's a single place to wire
+  // one up later without touching the export/list call sites.
+  const buildFilterParams = useCallback(() => ({}), [])
 
   const load = useCallback(async () => {
     setError('')
     try {
-      const res = await bankAccountsAPI.list({ page, limit })
+      const res = await bankAccountsAPI.list({ page, limit, ...buildFilterParams() })
       setItems(res.data.items)
       setTotal(res.data.total || 0)
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to load bank accounts. Please refresh.')
     }
-  }, [page])
+  }, [page, limit, buildFilterParams])
 
   useEffect(() => { load() }, [load])
 
@@ -63,7 +69,17 @@ export default function BankAccounts() {
           <p style={{ color: '#64748b', fontSize: '0.875rem' }}>Bank accounts displayed on Bank Transfer invoices</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn btn-secondary" onClick={() => exportCsv(items, ['bank_name','account_number','beneficiary_name','is_active'], { bank_name:'Bank Name', account_number:'Account Number', beneficiary_name:'Beneficiary', is_active:'Active' }, 'bank-accounts-export')}>Export CSV</button>
+          <button className="btn btn-secondary" disabled={exporting} onClick={async () => {
+            setExporting(true)
+            try {
+              const res = await bankAccountsAPI.exportXlsx(buildFilterParams())
+              downloadBlob(res.data, 'bank-accounts-export.xlsx')
+            } catch {
+              alert('Failed to export bank accounts.')
+            } finally {
+              setExporting(false)
+            }
+          }}>{exporting ? 'Exporting...' : 'Export'}</button>
           <button className="btn btn-primary" onClick={openCreate}>+ Add Bank Account</button>
         </div>
       </div>
@@ -105,7 +121,8 @@ export default function BankAccounts() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} limit={limit} onChange={setPage} />
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
 
       <Modal open={modal} onClose={() => { setModal(false); setSaveError('') }} title={editing ? 'Edit Bank Account' : 'Add Bank Account'} size="md">

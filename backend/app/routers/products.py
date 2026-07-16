@@ -11,8 +11,33 @@ from ..models.user import User
 from ..schemas.product import ProductCreate, ProductUpdate, ProductResponse
 from ..services.auth import get_current_user
 from ..services.permissions import require_permission
+from ..utils.xlsx import xlsx_response
 
 router = APIRouter(prefix="/products", tags=["Products"])
+
+
+def _filtered_products_query(
+    db: Session,
+    search: Optional[str] = None,
+    category_id: Optional[int] = None,
+    status: Optional[str] = None,
+    supplier_id: Optional[int] = None,
+):
+    q = (
+        db.query(Product)
+        .options(joinedload(Product.category), joinedload(Product.supplier))
+        .filter(Product.deleted_at.is_(None))
+    )
+    if search:
+        q = q.filter(Product.product_name.ilike(f"%{search}%"))
+    if category_id:
+        q = q.filter(Product.category_id == category_id)
+    if status:
+        q = q.filter(Product.status == status)
+    if supplier_id:
+        # Filter directly by products.supplier_id — the primary supplier relationship.
+        q = q.filter(Product.supplier_id == supplier_id)
+    return q
 
 
 def _load_product(db: Session, product_id: int):
@@ -63,20 +88,7 @@ def list_products(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    q = (
-        db.query(Product)
-        .options(joinedload(Product.category), joinedload(Product.supplier))
-        .filter(Product.deleted_at.is_(None))
-    )
-    if search:
-        q = q.filter(Product.product_name.ilike(f"%{search}%") | Product.sku.ilike(f"%{search}%"))
-    if category_id:
-        q = q.filter(Product.category_id == category_id)
-    if status:
-        q = q.filter(Product.status == status)
-    if supplier_id:
-        # Filter directly by products.supplier_id — the primary supplier relationship.
-        q = q.filter(Product.supplier_id == supplier_id)
+    q = _filtered_products_query(db, search, category_id, status, supplier_id)
     if in_stock_only:
         inv_filter = [Inventory.deleted_at.is_(None)]
         if warehouse_id:
@@ -116,19 +128,30 @@ def list_products(
     return {"total": total, "page": page, "limit": limit, "items": [ProductResponse.from_orm(p) for p in items]}
 
 
-def _check_sku_unique(db: Session, sku: Optional[str], exclude_product_id: Optional[int] = None):
-    if not sku:
-        return
-    q = db.query(Product).filter(Product.sku == sku, Product.deleted_at.is_(None))
-    if exclude_product_id is not None:
-        q = q.filter(Product.product_id != exclude_product_id)
-    if q.first():
-        raise HTTPException(status_code=400, detail=f"SKU '{sku}' is already used by another product")
+@router.get("/export")
+def export_products(
+    search: Optional[str] = None,
+    category_id: Optional[int] = None,
+    status: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Excel export honoring the same filters Products.jsx's own UI exposes
+    (search, category, status) — covers every matching row, not just the
+    current page."""
+    items = _filtered_products_query(db, search, category_id, status).all()
+    headers = ["Product Name", "Supplier", "Category", "Unit", "Price", "Min Stock", "Status", "Description"]
+    rows = [
+        [p.product_name, p.supplier.supplier_name if p.supplier else "",
+         p.category.category_name if p.category else "", p.unit, p.sale_price,
+         p.minimum_stock_level, p.status, p.product_description or ""]
+        for p in items
+    ]
+    return xlsx_response(headers, rows, "products-export.xlsx")
 
 
 @router.post("", response_model=ProductResponse)
 def create_product(data: ProductCreate, current_user: User = Depends(require_permission("master_data.products")), db: Session = Depends(get_db)):
-    _check_sku_unique(db, data.sku)
     product = Product(**data.dict(), created_by=current_user.username)
     db.add(product)
     db.flush()  # get product_id before syncing supplier_products
@@ -153,8 +176,6 @@ def update_product(product_id: int, data: ProductUpdate, current_user: User = De
         raise HTTPException(status_code=404, detail="Product not found")
 
     payload = data.dict(exclude_unset=True)
-    if "sku" in payload:
-        _check_sku_unique(db, payload["sku"], exclude_product_id=product_id)
 
     old_supplier_id = product.supplier_id
     for field, value in payload.items():

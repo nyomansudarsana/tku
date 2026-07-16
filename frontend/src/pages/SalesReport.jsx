@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { reportsAPI } from '../api'
 import AsyncDropdown from '../components/AsyncDropdown'
+import Pagination from '../components/Pagination'
+import { downloadBlob } from '../utils/downloadFile'
 import { formatNumber, formatCurrency, formatDate } from '../utils/format'
 
 const today = () => new Date().toISOString().slice(0, 10)
@@ -8,12 +10,20 @@ const firstOfMonth = () => { const d = new Date(); d.setDate(1); return d.toISOS
 
 export default function SalesReport() {
   const [items, setItems] = useState([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [limit, setLimit] = useState(15)
   const [dateFrom, setDateFrom] = useState(firstOfMonth())
   const [dateTo, setDateTo] = useState(today())
   const [storeFilter, setStoreFilter] = useState('')
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState('')
+  // Per-row cells show per-unit figures (per the required Margin formula), so
+  // the footer sums the line-level (quantity-weighted) totals the backend
+  // computes over the FULL filtered set — summing the per-unit column
+  // directly, or summing only the current page, would misrepresent the total.
+  const [totals, setTotals] = useState({ discount_amount: 0, sales_price_excl_vat: 0, vat_amount: 0, sales_price_incl_vat: 0, margin: 0 })
 
   const buildParams = () => {
     const params = {}
@@ -27,42 +37,25 @@ export default function SalesReport() {
     setLoading(true)
     setError('')
     try {
-      const res = await reportsAPI.sales(buildParams())
+      const res = await reportsAPI.sales({ page, limit, ...buildParams() })
       setItems(res.data.items || [])
+      setTotal(res.data.total || 0)
+      setTotals(res.data.totals || { discount_amount: 0, sales_price_excl_vat: 0, vat_amount: 0, sales_price_incl_vat: 0, margin: 0 })
     } catch {
       setError('Failed to load sales report.')
     } finally {
       setLoading(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFrom, dateTo, storeFilter])
+  }, [page, limit, dateFrom, dateTo, storeFilter])
 
   useEffect(() => { load() }, [load])
-
-  // Per-row cells show per-unit figures (per the required Margin formula),
-  // so the footer sums the line-level (quantity-weighted) totals the backend
-  // provides alongside them — summing the per-unit column directly would
-  // produce a meaningless blended number across lines of different quantity.
-  const totals = items.reduce((acc, r) => {
-    acc.discount += r._line_discount_amount || 0
-    acc.exclVat += r._line_sales_price_excl_vat || 0
-    acc.vat += r._line_vat_amount || 0
-    acc.inclVat += r._line_sales_price_incl_vat || 0
-    acc.margin += r._line_margin || 0
-    return acc
-  }, { discount: 0, exclVat: 0, vat: 0, inclVat: 0, margin: 0 })
 
   const handleExport = async () => {
     setExporting(true)
     try {
       const res = await reportsAPI.salesXlsx(buildParams())
-      const blob = new Blob([res.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = 'sales-report.xlsx'
-      a.click()
-      URL.revokeObjectURL(url)
+      downloadBlob(res.data, 'sales-report.xlsx')
     } catch {
       setError('Failed to export report.')
     } finally {
@@ -92,12 +85,12 @@ export default function SalesReport() {
 
       <div className="card">
         <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
-          <input className="input" type="date" style={{ width: 'auto' }} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+          <input className="input" type="date" style={{ width: 'auto' }} value={dateFrom} onChange={e => { setDateFrom(e.target.value); setPage(1) }} />
           <span style={{ color: '#94a3b8', fontSize: '0.8rem' }}>to</span>
-          <input className="input" type="date" style={{ width: 'auto' }} value={dateTo} onChange={e => setDateTo(e.target.value)} />
+          <input className="input" type="date" style={{ width: 'auto' }} value={dateTo} onChange={e => { setDateTo(e.target.value); setPage(1) }} />
           <div style={{ minWidth: '12rem' }}>
             <AsyncDropdown endpoint="/stores" labelField="store_name" valueField="store_id"
-              value={storeFilter} onChange={setStoreFilter} placeholder="All Stores" />
+              value={storeFilter} onChange={v => { setStoreFilter(v); setPage(1) }} placeholder="All Stores" />
           </div>
         </div>
 
@@ -146,10 +139,10 @@ export default function SalesReport() {
                 <tr style={{ fontWeight: 700, background: '#f8fafc' }}>
                   <td colSpan={7} style={{ textAlign: 'right' }}>Totals</td>
                   <td></td>
-                  <td>{formatCurrency(totals.discount)}</td>
-                  <td>{formatCurrency(totals.exclVat)}</td>
-                  <td style={{ color: '#059669' }}>{formatCurrency(totals.vat)}</td>
-                  <td>{formatCurrency(totals.inclVat)}</td>
+                  <td>{formatCurrency(totals.discount_amount)}</td>
+                  <td>{formatCurrency(totals.sales_price_excl_vat)}</td>
+                  <td style={{ color: '#059669' }}>{formatCurrency(totals.vat_amount)}</td>
+                  <td>{formatCurrency(totals.sales_price_incl_vat)}</td>
                   <td style={{ color: totals.margin >= 0 ? '#16a34a' : '#dc2626' }}>{formatCurrency(totals.margin)}</td>
                   <td></td>
                 </tr>
@@ -157,6 +150,8 @@ export default function SalesReport() {
             )}
           </table>
         </div>
+        <Pagination page={page} total={total} limit={limit} onChange={setPage}
+          pageSizeOptions={[15, 25, 50, 100]} onLimitChange={v => { setLimit(v); setPage(1) }} />
       </div>
     </div>
   )

@@ -45,3 +45,20 @@ class StockOpnameDetail(Base):
 
     product = relationship("Product", foreign_keys=[product_id])
     opname  = relationship("StockOpname", back_populates="details")
+    breakdown = relationship("StockOpnameDetailBreakdown", back_populates="detail",
+                              cascade="all, delete-orphan")
+
+
+class StockOpnameDetailBreakdown(Base):
+    __tablename__ = "stock_opname_detail_breakdowns"
+
+    breakdown_id     = Column(Integer, primary_key=True, index=True)
+    opname_detail_id = Column(Integer, ForeignKey("stock_opname_details.id"), nullable=False)
+    # Lost/Missing, Damaged, Expired, Incomplete, Rodent, Other — explains the
+    # variance for this line. Purely documentation: does not affect the
+    # good_qty/damaged_qty/incomplete_qty inventory-posting logic above.
+    category         = Column(String(30), nullable=False)
+    quantity         = Column(Integer, nullable=False)
+    notes            = Column(Text, nullable=True)
+
+    detail = relationship("StockOpnameDetail", back_populates="breakdown")

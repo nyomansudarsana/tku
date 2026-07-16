@@ -115,6 +115,27 @@ def run_migrations(db_path: str) -> None:
         # ── Repair products.sku='' rows (UNIQUE collision) to NULL ───────────
         _migrate_products_sku_v1(c)
 
+        # ── SKU field removed entirely ────────────────────────────────────────
+        _migrate_products_drop_sku_v1(c)
+
+        # ── Stock Opname: per-line variance breakdown ────────────────────────
+        _migrate_stock_opname_breakdown_v1(c)
+
+        # ── Sales: VAT-excluded basic subtotal + Online Customer/shipping ───
+        _migrate_sales_basic_subtotal_v1(c)
+        _migrate_sales_customer_type_shipping_v1(c)
+
+        # ── Sales Return: link to specific SalesDetail line ──────────────────
+        _migrate_sales_returns_detail_id_v1(c)
+
+        # ── Repair transfer-created inventory buckets stranded at avg_cost=0 ─
+        _migrate_repair_transfer_zero_avg_cost_v1(c)
+
+        # ── Sales Return: Broken Parts + Exchange workflows ──────────────────
+        _migrate_sales_returns_type_v1(c)
+        _migrate_sales_return_part_replacements_v1(c)
+        _migrate_sales_exchanges_v1(c)
+
         conn.commit()
         logger.info("Database migrations completed successfully")
     except Exception as exc:
@@ -972,9 +993,192 @@ def _migrate_products_sku_v1(c) -> None:
     create/update endpoints normalized blank SKU to NULL) must be repaired
     or the next blank-SKU product create will hit UNIQUE constraint failed.
     """
-    if not _table_exists(c, "products"):
+    if not _table_exists(c, "products") or not _column_exists(c, "products", "sku"):
         return
     c.execute("UPDATE products SET sku = NULL WHERE sku = ''")
     affected = c.rowcount
     if affected:
         logger.info("products: repaired %d row(s) with sku='' to NULL", affected)
+
+
+def _migrate_products_drop_sku_v1(c) -> None:
+    """SKU field removed from the product model entirely — drop the column
+    (SQLite >= 3.35 supports DROP COLUMN natively; existing product rows are
+    otherwise untouched). The column's own index must be dropped first —
+    SQLite's DROP COLUMN does not automatically clean up a separately
+    CREATE INDEX'd (non-inline) index over that column."""
+    if _table_exists(c, "products") and _column_exists(c, "products", "sku"):
+        c.execute("DROP INDEX IF EXISTS ix_products_sku")
+        c.execute("ALTER TABLE products DROP COLUMN sku")
+        logger.info("products: dropped sku column")
+
+
+def _migrate_stock_opname_breakdown_v1(c) -> None:
+    """Per-line variance breakdown (Lost/Missing, Damaged, Expired, Incomplete,
+    Rodent, Other) — purely explanatory metadata, does not affect the
+    good_qty/damaged_qty/incomplete_qty inventory-posting logic."""
+    if not _table_exists(c, "stock_opname_details"):
+        return
+    if not _table_exists(c, "stock_opname_detail_breakdowns"):
+        c.execute("""
+            CREATE TABLE stock_opname_detail_breakdowns (
+                breakdown_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                opname_detail_id  INTEGER NOT NULL REFERENCES stock_opname_details(id),
+                category          VARCHAR(30) NOT NULL,
+                quantity          INTEGER NOT NULL,
+                notes             TEXT
+            )
+        """)
+        logger.info("created table stock_opname_detail_breakdowns")
+
+
+def _migrate_sales_basic_subtotal_v1(c) -> None:
+    """VAT-excluded, discount-net header total for the Order Summary display."""
+    if not _table_exists(c, "sales"):
+        return
+    if not _column_exists(c, "sales", "basic_subtotal"):
+        c.execute("ALTER TABLE sales ADD COLUMN basic_subtotal REAL NOT NULL DEFAULT 0")
+        logger.info("sales: added column basic_subtotal")
+        c.execute("UPDATE sales SET basic_subtotal = grand_total - vat_amount")
+
+
+def _migrate_sales_customer_type_shipping_v1(c) -> None:
+    """Online Customer support: customer_type + shipping_cost (not VAT-taxed)."""
+    if not _table_exists(c, "sales"):
+        return
+    if not _column_exists(c, "sales", "customer_type"):
+        c.execute(
+            "ALTER TABLE sales ADD COLUMN customer_type VARCHAR(20) NOT NULL DEFAULT 'Walk-in Customer'"
+        )
+        logger.info("sales: added column customer_type")
+    if not _column_exists(c, "sales", "shipping_cost"):
+        c.execute("ALTER TABLE sales ADD COLUMN shipping_cost REAL NOT NULL DEFAULT 0")
+        logger.info("sales: added column shipping_cost")
+
+
+def _migrate_sales_returns_detail_id_v1(c) -> None:
+    """Links a Sales Return to the specific SalesDetail line it's against,
+    so multi-item sales support proper partial/per-line returns. Nullable —
+    pre-existing return rows (single-item era) keep NULL, matched by
+    sales_id + product_id instead."""
+    if not _table_exists(c, "sales_returns"):
+        return
+    if not _column_exists(c, "sales_returns", "sales_detail_id"):
+        c.execute("ALTER TABLE sales_returns ADD COLUMN sales_detail_id INTEGER REFERENCES sales_details(detail_id)")
+        logger.info("sales_returns: added column sales_detail_id")
+
+
+def _migrate_sales_returns_type_v1(c) -> None:
+    """Which of the 3 supported return workflows this row is: Product
+    Replacement (today's existing Good/Defective/Damaged/Incomplete
+    condition flow, unchanged), Broken Parts, or Exchange. Existing rows
+    backfill to 'Product Replacement' — their original, only-ever behavior."""
+    if not _table_exists(c, "sales_returns"):
+        return
+    if not _column_exists(c, "sales_returns", "return_type"):
+        c.execute(
+            "ALTER TABLE sales_returns ADD COLUMN return_type VARCHAR(30) NOT NULL DEFAULT 'Product Replacement'"
+        )
+        logger.info("sales_returns: added column return_type")
+
+
+def _migrate_sales_return_part_replacements_v1(c) -> None:
+    """Broken Parts scenario: a spare part is cannibalized from another
+    complete unit of the same product, sold. Available -qty / Incomplete
+    +qty for that cannibalized unit — the customer's original unit is never
+    physically returned, so this is standalone documentation + drives the
+    inventory adjustment at approval time."""
+    if not _table_exists(c, "sales_return_part_replacements"):
+        c.execute("""
+            CREATE TABLE sales_return_part_replacements (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                sales_return_id   INTEGER NOT NULL REFERENCES sales_returns(return_id),
+                product_id        INTEGER NOT NULL REFERENCES products(product_id),
+                part_name         VARCHAR(100) NOT NULL,
+                quantity          INTEGER NOT NULL,
+                remarks           TEXT
+            )
+        """)
+        logger.info("created table sales_return_part_replacements")
+
+
+def _migrate_sales_exchanges_v1(c) -> None:
+    """Exchange-to-another-product scenario. old_price/new_price are
+    snapshots (never recomputed later); difference_amount is always >= 0 —
+    TKU does not refund cash, so a cheaper exchange product is rejected at
+    creation time rather than represented here."""
+    if not _table_exists(c, "sales_exchanges"):
+        c.execute("""
+            CREATE TABLE sales_exchanges (
+                exchange_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                sales_return_id    INTEGER NOT NULL REFERENCES sales_returns(return_id),
+                old_product_id     INTEGER NOT NULL REFERENCES products(product_id),
+                new_product_id     INTEGER NOT NULL REFERENCES products(product_id),
+                old_price           REAL NOT NULL,
+                new_price           REAL NOT NULL,
+                quantity            INTEGER NOT NULL,
+                difference_amount   REAL NOT NULL,
+                payment_status      VARCHAR(20) NOT NULL DEFAULT 'Unpaid',
+                created_at          DATETIME DEFAULT NULL
+            )
+        """)
+        logger.info("created table sales_exchanges")
+
+
+def _migrate_repair_transfer_zero_avg_cost_v1(c) -> None:
+    """
+    One-time repair for the pre-fix Stock Movement bug: transferring stock
+    into a (product, warehouse, inventory_type) bucket that had never been
+    received into directly permanently stamped avg_cost=0 (update_inventory_
+    balance only recomputed cost for transaction_type == "RECEIVING"; see
+    services/inventory_service.py). Now that new transfers correctly carry
+    the source bucket's cost forward, this backfills existing rows still
+    stuck at avg_cost=0 despite having real quantity on hand.
+
+    Recovery source: every TRANSFER_IN ledger row shares its reference_no
+    ("MOV-{movement_id}") with a TRANSFER_OUT sibling row, and that sibling's
+    unit_cost was stamped from the SOURCE bucket's avg_cost at transfer time
+    — untouched by this bug (only the destination was ever zeroed) — so it's
+    a reliable historical value to backfill from.
+
+    Buckets with no traceable transfer history (e.g. a positive Stock Opname
+    adjustment into a brand-new bucket, which has no principled source cost
+    to inherit) are deliberately left at avg_cost=0 rather than guessing —
+    the Inventory Report already renders that as "N/A", not a misleading Rp 0.
+    """
+    if not _table_exists(c, "inventories") or not _table_exists(c, "inventory_ledger"):
+        return
+
+    c.execute("SELECT inventory_id, product_id, warehouse_id, inventory_type FROM inventories WHERE avg_cost = 0 AND quantity > 0")
+    zero_cost_rows = c.fetchall()
+
+    repaired = 0
+    for inventory_id, product_id, warehouse_id, inventory_type in zero_cost_rows:
+        c.execute("""
+            SELECT reference_no FROM inventory_ledger
+            WHERE transaction_type = 'TRANSFER_IN'
+              AND product_id = ? AND warehouse_id = ? AND inventory_type = ?
+            ORDER BY ledger_id DESC
+        """, (product_id, warehouse_id, inventory_type))
+        transfer_refs = [r[0] for r in c.fetchall()]
+
+        found_cost = None
+        for ref in transfer_refs:
+            c.execute("""
+                SELECT unit_cost FROM inventory_ledger
+                WHERE reference_no = ? AND transaction_type = 'TRANSFER_OUT'
+                  AND product_id = ? AND inventory_type = ?
+                  AND unit_cost IS NOT NULL AND unit_cost > 0
+                LIMIT 1
+            """, (ref, product_id, inventory_type))
+            row = c.fetchone()
+            if row:
+                found_cost = row[0]
+                break
+
+        if found_cost:
+            c.execute("UPDATE inventories SET avg_cost = ? WHERE inventory_id = ?", (found_cost, inventory_id))
+            repaired += 1
+
+    if repaired:
+        logger.info("inventories: repaired avg_cost for %d transfer-created bucket(s) from source transfer cost", repaired)

@@ -8,8 +8,16 @@ from ..models.user import User
 from ..schemas.category import CategoryCreate, CategoryUpdate, CategoryResponse
 from ..services.auth import get_current_user
 from ..services.permissions import require_permission
+from ..utils.xlsx import xlsx_response
 
 router = APIRouter(prefix="/categories", tags=["Categories"])
+
+
+def _filtered_category_query(db: Session, search: Optional[str] = None):
+    q = db.query(Category).filter(Category.deleted_at.is_(None))
+    if search:
+        q = q.filter(Category.category_name.ilike(f"%{search}%"))
+    return q
 
 
 @router.get("", response_model=dict)
@@ -20,12 +28,24 @@ def list_categories(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    q = db.query(Category).filter(Category.deleted_at.is_(None))
-    if search:
-        q = q.filter(Category.category_name.ilike(f"%{search}%"))
+    q = _filtered_category_query(db, search)
     total = q.count()
     items = q.offset((page - 1) * limit).limit(limit).all()
     return {"total": total, "page": page, "limit": limit, "items": [CategoryResponse.from_orm(c) for c in items]}
+
+
+@router.get("/export")
+def export_categories(
+    search: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Excel export honoring the same filters as list_categories() above —
+    covers every matching row, not just the current page."""
+    items = _filtered_category_query(db, search).all()
+    headers = ["Category Name", "Description"]
+    rows = [[c.category_name, c.description or ""] for c in items]
+    return xlsx_response(headers, rows, "categories-export.xlsx")
 
 
 @router.post("", response_model=CategoryResponse)

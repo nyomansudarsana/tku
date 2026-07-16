@@ -317,11 +317,15 @@ def compute_low_stock(db: Session, warehouse_id: Optional[int] = None) -> list:
 @router.get("/low-stock")
 def low_stock_list(
     warehouse_id: Optional[int] = None,
-    limit: int = Query(50, ge=1, le=200),
+    page: int = Query(1, ge=1),
+    limit: int = Query(15, ge=1, le=200),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    return compute_low_stock(db, warehouse_id)[:limit]
+    rows = compute_low_stock(db, warehouse_id)
+    total = len(rows)
+    start = (page - 1) * limit
+    return {"items": rows[start:start + limit], "total": total, "page": page, "limit": limit}
 
 
 @router.get("/sales-by-payment-method")
